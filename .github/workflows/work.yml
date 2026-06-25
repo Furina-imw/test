@@ -20,13 +20,13 @@ jobs:
           distribution: 'temurin'
           java-version: '25'
 
-      - name: Sửa lỗi JNI và Ép liên kết tĩnh bằng Python
+      - name: Sửa lỗi JNI và Ép liên kết tĩnh cục bộ bằng Python
         run: |
-          # Thêm thư viện cstdint bị thiếu ở bản mới
+          # Sửa lỗi thiếu file header cstdint
           sed -i '1s/^/#include <cstdint>\n/' db/blob/blob_file_meta.h
           
           python3 -c "
-          # 1. Sửa lỗi ép kiểu JNIEnv trong portal.h
+          # 1. Sửa lỗi ép kiểu JNIEnv trong portal.h như cũ
           with open('java/rocksjni/portal.h', 'r') as f:
               portal = f.read()
           portal = portal.replace('reinterpret_cast<void**>', 'reinterpret_cast<JNIEnv**>')
@@ -34,15 +34,24 @@ jobs:
           with open('java/rocksjni/portal.h', 'w') as f:
               f.write(portal)
           
-          # 2. Đổi đích liên kết từ rocksdb-shared sang rocksdb (thư viện tĩnh)
+          # 2. Can thiệp cục bộ vào java/CMakeLists.txt
           with open('java/CMakeLists.txt', 'r') as f:
               cmake = f.read()
           
-          cmake = cmake.replace('rocksdb-shared', 'rocksdb')
+          # CHỈ thay thế lệnh liên kết của rocksdbjni từ bản shared sang bản tĩnh (rocksdb) và thêm thư viện log hệ thống Android
+          old_link = 'target_link_libraries(rocksdbjni PRIVATE rocksdb-shared)'
+          new_link = 'target_link_libraries(rocksdbjni PRIVATE rocksdb log)'
+          
+          if old_link in cmake:
+              cmake = cmake.replace(old_link, new_link)
+              print('-> Ép liên kết tĩnh cục bộ thành công!')
+          else:
+              # Dự phòng nếu cấu trúc khoảng trắng thay đổi
+              cmake = cmake.replace('rocksdb-shared', 'rocksdb log')
+              print('-> Cảnh báo: Thay thế hàng loạt có điều kiện!')
           
           with open('java/CMakeLists.txt', 'w') as f:
               f.write(cmake)
-          print('-> Ép liên kết tĩnh cho lớp JNI thành công!')
           "
 
       - name: Cấu hình CMake độc lập toàn phần (Nhúng lõi hoàn toàn)
