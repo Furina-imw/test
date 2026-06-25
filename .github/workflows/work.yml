@@ -58,7 +58,6 @@ jobs:
             -DWITH_JNI=ON \
             -DWITH_GFLAGS=OFF \
             -DCMAKE_BUILD_TYPE=Release
-
       - name: Tiến hành Biên dịch ra file .so
         run: |
           cd build
@@ -68,5 +67,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rocksdbjni-android-arm64
-          path: build/java/librocksdbjni-*.so
+          path: |
+            build/java/librocksdbjni*.so
+            build/java/target/librocksdbjni*.so
+            build/librocksdbjni*.so
+            build/librocksdb.so
+          if-no-files-found: error
           
