@@ -22,31 +22,22 @@ jobs:
 
       - name: Sửa lỗi JNI và Thêm Header bằng Python
         run: |
-          # Thêm cstdint vào file header bị thiếu
           sed -i '1s/^/#include <cstdint>\n/' db/blob/blob_file_meta.h
-          
-          # Sử dụng Python để thay thế chuỗi thô chính xác tuyệt đối, tránh lỗi cú pháp Shell
           python3 -c "
           with open('java/rocksjni/portal.h', 'r') as f:
               content = f.read()
-          
-          # Thay thế chính xác dòng lỗi JNIEnv truyền void**
           old_line = 'jvm->AttachCurrentThread(reinterpret_cast<void**>(&env), nullptr);'
           new_line = 'jvm->AttachCurrentThread(reinterpret_cast<JNIEnv**>(&env), nullptr);'
-          
           if old_line in content:
               content = content.replace(old_line, new_line)
-              print('-> Thay thế dòng void** thành JNIEnv** thành công!')
           else:
-              print('-> Canh báo: Không tìm thấy chuỗi khớp tuyệt đối, tiến hành thử biến thể khoảng trắng...')
               content = content.replace('reinterpret_cast<void**>', 'reinterpret_cast<JNIEnv**>')
               content = content.replace('reinterpret_cast<void **>', 'reinterpret_cast<JNIEnv**>')
-          
           with open('java/rocksjni/portal.h', 'w') as f:
               f.write(content)
           "
 
-      - name: Tạo thư mục Build và Cấu hình CMake với NDK có sẵn
+      - name: Cấu hình CMake nhúng lõi C++ (Static Link)
         run: |
           mkdir build && cd build
           cmake .. \
@@ -57,8 +48,11 @@ jobs:
             -DPORTABLE=ON \
             -DWITH_JNI=ON \
             -DWITH_GFLAGS=OFF \
+            -DROCKSDB_BUILD_TESTS=OFF \
+            -DROCKSDB_BUILD_SHARED_LIBS=OFF \
             -DCMAKE_BUILD_TYPE=Release
-      - name: Tiến hành Biên dịch ra file .so
+
+      - name: Tiến hành Biên dịch ra file .so độc lập
         run: |
           cd build
           cmake --build . --target rocksdbjava -j$(nproc)
@@ -71,6 +65,5 @@ jobs:
             build/java/librocksdbjni*.so
             build/java/target/librocksdbjni*.so
             build/librocksdbjni*.so
-            build/librocksdb.so
           if-no-files-found: error
           
