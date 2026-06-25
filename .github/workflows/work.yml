@@ -20,21 +20,32 @@ jobs:
           distribution: 'temurin'
           java-version: '25'
 
-      - name: Sửa lỗi kiểu dữ liệu JNI trên Android bằng Python
+      - name: Sửa lỗi JNI và Ép liên kết tĩnh bằng Python
         run: |
+          # Thêm thư viện cstdint bị thiếu ở bản mới
           sed -i '1s/^/#include <cstdint>\n/' db/blob/blob_file_meta.h
           
           python3 -c "
+          # 1. Sửa lỗi ép kiểu JNIEnv trong portal.h
           with open('java/rocksjni/portal.h', 'r') as f:
               portal = f.read()
           portal = portal.replace('reinterpret_cast<void**>', 'reinterpret_cast<JNIEnv**>')
           portal = portal.replace('reinterpret_cast<void **>', 'reinterpret_cast<JNIEnv**>')
           with open('java/rocksjni/portal.h', 'w') as f:
               f.write(portal)
-          print('-> Đã sửa lỗi JNIEnv thành công!')
+          
+          # 2. Đổi đích liên kết từ rocksdb-shared sang rocksdb (thư viện tĩnh)
+          with open('java/CMakeLists.txt', 'r') as f:
+              cmake = f.read()
+          
+          cmake = cmake.replace('rocksdb-shared', 'rocksdb')
+          
+          with open('java/CMakeLists.txt', 'w') as f:
+              f.write(cmake)
+          print('-> Ép liên kết tĩnh cho lớp JNI thành công!')
           "
 
-      - name: Cấu hình CMake độc lập toàn phần (Ép liên kết tĩnh chuẩn NDK)
+      - name: Cấu hình CMake độc lập toàn phần (Nhúng lõi hoàn toàn)
         run: |
           mkdir build && cd build
           cmake .. \
@@ -46,7 +57,6 @@ jobs:
             -DWITH_JNI=ON \
             -DWITH_GFLAGS=OFF \
             -DROCKSDB_BUILD_TESTS=OFF \
-            -DROCKSDB_BUILD_SHARED_LIBS=OFF \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_CXX_FLAGS="-static-libstdc++" \
             -DCMAKE_SHARED_LINKER_FLAGS="-static-libstdc++ -Wl,--exclude-libs,ALL" \
