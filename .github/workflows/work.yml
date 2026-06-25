@@ -20,13 +20,31 @@ jobs:
           distribution: 'temurin'
           java-version: '25'
 
-      - name: Sửa lỗi kiểu dữ liệu JNI trên Android (Sử dụng Regex linh hoạt)
+      - name: Sửa lỗi JNI và Thêm Header bằng Python
         run: |
           # Thêm cstdint vào file header bị thiếu
           sed -i '1s/^/#include <cstdint>\n/' db/blob/blob_file_meta.h
           
-          # Sử dụng Regex nhận diện linh hoạt mọi biến thể khoảng trắng của void**
-          sed -i -E 's/reinterpret_cast<void[[:space:]]*\*\*>/reinterpret_cast<JNIEnv\*\*>/g' java/rocksjni/portal.h
+          # Sử dụng Python để thay thế chuỗi thô chính xác tuyệt đối, tránh lỗi cú pháp Shell
+          python3 -c "
+          with open('java/rocksjni/portal.h', 'r') as f:
+              content = f.read()
+          
+          # Thay thế chính xác dòng lỗi JNIEnv truyền void**
+          old_line = 'jvm->AttachCurrentThread(reinterpret_cast<void**>(&env), nullptr);'
+          new_line = 'jvm->AttachCurrentThread(reinterpret_cast<JNIEnv**>(&env), nullptr);'
+          
+          if old_line in content:
+              content = content.replace(old_line, new_line)
+              print('-> Thay thế dòng void** thành JNIEnv** thành công!')
+          else:
+              print('-> Canh báo: Không tìm thấy chuỗi khớp tuyệt đối, tiến hành thử biến thể khoảng trắng...')
+              content = content.replace('reinterpret_cast<void**>', 'reinterpret_cast<JNIEnv**>')
+              content = content.replace('reinterpret_cast<void **>', 'reinterpret_cast<JNIEnv**>')
+          
+          with open('java/rocksjni/portal.h', 'w') as f:
+              f.write(content)
+          "
 
       - name: Tạo thư mục Build và Cấu hình CMake với NDK có sẵn
         run: |
@@ -51,3 +69,4 @@ jobs:
         with:
           name: rocksdbjni-android-arm64
           path: build/java/librocksdbjni-*.so
+          
