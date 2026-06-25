@@ -20,12 +20,12 @@ jobs:
           distribution: 'temurin'
           java-version: '25'
 
-      - name: Sửa lỗi JNI và Ép buộc liên kết tĩnh (Static Link) bằng Python
+      - name: Ép buộc liên kết tĩnh toàn phần bằng Python
         run: |
           sed -i '1s/^/#include <cstdint>\n/' db/blob/blob_file_meta.h
           
           python3 -c "
-          # 1. Sửa lỗi ép kiểu JNIEnv như cũ
+          # 1. Sửa lỗi ép kiểu JNIEnv
           with open('java/rocksjni/portal.h', 'r') as f:
               content = f.read()
           content = content.replace('reinterpret_cast<void**>', 'reinterpret_cast<JNIEnv**>')
@@ -33,20 +33,22 @@ jobs:
           with open('java/rocksjni/portal.h', 'w') as f:
               f.write(content)
           
-          # 2. Canh thiệp vào CMakeLists.txt của Java để ép nhúng tĩnh librocksdb.a thay vì gọi file .so lẻ
+          # 2. Can thiệp sâu vào java/CMakeLists.txt để gỡ bỏ hoàn toàn liên kết động
           with open('java/CMakeLists.txt', 'r') as f:
               cmake_content = f.read()
           
-          # Tìm đoạn liên kết và thay thế sang liên kết tĩnh rocksdb_static thay vì rocksdb-shared
-          if 'rocksdb-shared' in cmake_content:
-              cmake_content = cmake_content.replace('rocksdb-shared', 'rocksdb')
-              print('-> Ép buộc JNI liên kết với thư viện tĩnh thành công!')
+          # Thay thế bất kỳ cấu hình liên kết động nào liên quan đến rocksdb-shared sang thư viện tĩnh rocksdb
+          cmake_content = cmake_content.replace('rocksdb-shared', 'rocksdb')
+          
+          # Thêm lệnh ép buộc liên kết tĩnh thủ công ở cuối file để chắc chắn
+          cmake_content += '\n\ntarget_link_libraries(rocksdbjni PRIVATE rocksdb)\n'
           
           with open('java/CMakeLists.txt', 'w') as f:
               f.write(cmake_content)
+          print('-> Đã cấu hình ép liên kết tĩnh sâu vào java/CMakeLists.txt')
           "
 
-      - name: Cấu hình CMake với chế độ độc lập hoàn toàn
+      - name: Cấu hình CMake với chế độ độc lập và cờ hệ thống NDK
         run: |
           mkdir build && cd build
           cmake .. \
@@ -59,6 +61,8 @@ jobs:
             -DWITH_GFLAGS=OFF \
             -DROCKSDB_BUILD_TESTS=OFF \
             -DROCKSDB_BUILD_SHARED_LIBS=OFF \
+            -DCMAKE_CXX_FLAGS="-static-libstdc++" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-static-libstdc++" \
             -DCMAKE_BUILD_TYPE=Release
 
       - name: Tiến hành Biên dịch ra file .so độc lập
