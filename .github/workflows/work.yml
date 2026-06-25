@@ -20,24 +20,33 @@ jobs:
           distribution: 'temurin'
           java-version: '25'
 
-      - name: Sửa lỗi JNI và Thêm Header bằng Python
+      - name: Sửa lỗi JNI và Ép buộc liên kết tĩnh (Static Link) bằng Python
         run: |
           sed -i '1s/^/#include <cstdint>\n/' db/blob/blob_file_meta.h
+          
           python3 -c "
+          # 1. Sửa lỗi ép kiểu JNIEnv như cũ
           with open('java/rocksjni/portal.h', 'r') as f:
               content = f.read()
-          old_line = 'jvm->AttachCurrentThread(reinterpret_cast<void**>(&env), nullptr);'
-          new_line = 'jvm->AttachCurrentThread(reinterpret_cast<JNIEnv**>(&env), nullptr);'
-          if old_line in content:
-              content = content.replace(old_line, new_line)
-          else:
-              content = content.replace('reinterpret_cast<void**>', 'reinterpret_cast<JNIEnv**>')
-              content = content.replace('reinterpret_cast<void **>', 'reinterpret_cast<JNIEnv**>')
+          content = content.replace('reinterpret_cast<void**>', 'reinterpret_cast<JNIEnv**>')
+          content = content.replace('reinterpret_cast<void **>', 'reinterpret_cast<JNIEnv**>')
           with open('java/rocksjni/portal.h', 'w') as f:
               f.write(content)
+          
+          # 2. Canh thiệp vào CMakeLists.txt của Java để ép nhúng tĩnh librocksdb.a thay vì gọi file .so lẻ
+          with open('java/CMakeLists.txt', 'r') as f:
+              cmake_content = f.read()
+          
+          # Tìm đoạn liên kết và thay thế sang liên kết tĩnh rocksdb_static thay vì rocksdb-shared
+          if 'rocksdb-shared' in cmake_content:
+              cmake_content = cmake_content.replace('rocksdb-shared', 'rocksdb')
+              print('-> Ép buộc JNI liên kết với thư viện tĩnh thành công!')
+          
+          with open('java/CMakeLists.txt', 'w') as f:
+              f.write(cmake_content)
           "
 
-      - name: Cấu hình CMake nhúng lõi C++ (Static Link)
+      - name: Cấu hình CMake với chế độ độc lập hoàn toàn
         run: |
           mkdir build && cd build
           cmake .. \
