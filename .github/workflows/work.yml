@@ -1,88 +1,54 @@
-name: Build RocksDB for Android ARM64
+name: Build RocksDB Standalone Android ARM64
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-android:
+  build-jni:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout mã nguồn RocksDB
+      - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          repository: facebook/rocksdb
-          ref: v10.2.1
 
-      - name: Thiết lập Java 25
+      - name: Setup Java JDK
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '25'
+          distribution: 'zulu'
+          java-version: '17'
 
-      - name: Sửa lỗi JNI và Ép liên kết tĩnh cục bộ bằng Python
-        run: |
-          # Sửa lỗi thiếu file header cstdint
-          sed -i '1s/^/#include <cstdint>\n/' db/blob/blob_file_meta.h
-          
-          python3 -c "
-          # 1. Sửa lỗi ép kiểu JNIEnv trong portal.h như cũ
-          with open('java/rocksjni/portal.h', 'r') as f:
-              portal = f.read()
-          portal = portal.replace('reinterpret_cast<void**>', 'reinterpret_cast<JNIEnv**>')
-          portal = portal.replace('reinterpret_cast<void **>', 'reinterpret_cast<JNIEnv**>')
-          with open('java/rocksjni/portal.h', 'w') as f:
-              f.write(portal)
-          
-          # 2. Can thiệp cục bộ vào java/CMakeLists.txt
-          with open('java/CMakeLists.txt', 'r') as f:
-              cmake = f.read()
-          
-          # CHỈ thay thế lệnh liên kết của rocksdbjni từ bản shared sang bản tĩnh (rocksdb) và thêm thư viện log hệ thống Android
-          old_link = 'target_link_libraries(rocksdbjni PRIVATE rocksdb-shared)'
-          new_link = 'target_link_libraries(rocksdbjni PRIVATE rocksdb log)'
-          
-          if old_link in cmake:
-              cmake = cmake.replace(old_link, new_link)
-              print('-> Ép liên kết tĩnh cục bộ thành công!')
-          else:
-              # Dự phòng nếu cấu trúc khoảng trắng thay đổi
-              cmake = cmake.replace('rocksdb-shared', 'rocksdb log')
-              print('-> Cảnh báo: Thay thế hàng loạt có điều kiện!')
-          
-          with open('java/CMakeLists.txt', 'w') as f:
-              f.write(cmake)
-          "
+      - name: Setup Android NDK
+        uses: android-actions/setup-android@v3
 
-      - name: Cấu hình CMake độc lập toàn phần (Nhúng lõi hoàn toàn)
+      - name: Clone Official RocksDB Source
         run: |
+          git clone --depth 1 https://github.com/facebook/rocksdb.git
+
+      - name: Configure CMake and Build Standalone Library
+        run: |
+          cd rocksdb
           mkdir build && cd build
+          
           cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-26 \
-            -DFAIL_ON_WARNINGS=OFF \
-            -DPORTABLE=ON \
+            -DANDROID_PLATFORM=android-21 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DROCKSDB_BUILD_SHARED_LIBS=OFF \
             -DWITH_JNI=ON \
+            -DPORTABLE=ON \
+            -DFAIL_ON_WARNINGS=OFF \
             -DWITH_GFLAGS=OFF \
-            -DROCKSDB_BUILD_TESTS=OFF \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_CXX_FLAGS="-static-libstdc++" \
-            -DCMAKE_SHARED_LINKER_FLAGS="-static-libstdc++ -Wl,--exclude-libs,ALL" \
-            -DCMAKE_BUILD_TYPE=Release
+            -DWITH_TESTS=OFF \
+            -DWITH_TOOLS=OFF \
+            -DWITH_CORE_TOOLS=OFF \
+            -DWITH_BENCHMARK_TOOLS=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+            
+          make -j$(nproc) rocksdbjni
 
-      - name: Tiến hành Biên dịch ra file .so độc lập
-        run: |
-          cd build
-          cmake --build . --target rocksdbjava -j$(nproc)
-
-      - name: Tải file thành phẩm lên GitHub Artifacts
+      - name: Upload Standalone Library
         uses: actions/upload-artifact@v4
         with:
-          name: rocksdbjni-android-arm64
-          path: |
-            build/java/librocksdbjni*.so
-            build/java/target/librocksdbjni*.so
-            build/librocksdbjni*.so
-          if-no-files-found: error
+          name: librocksdbjni-standalone-arm64
+          path: rocksdb/build/java/librocksdbjni.so
           
