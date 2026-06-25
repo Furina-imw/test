@@ -20,35 +20,35 @@ jobs:
           distribution: 'temurin'
           java-version: '25'
 
-      - name: Ép buộc liên kết tĩnh toàn phần bằng Python
+      - name: Ép buộc cấu trúc liên kết tĩnh JNI bằng Python
         run: |
           sed -i '1s/^/#include <cstdint>\n/' db/blob/blob_file_meta.h
           
           python3 -c "
           # 1. Sửa lỗi ép kiểu JNIEnv
           with open('java/rocksjni/portal.h', 'r') as f:
-              content = f.read()
-          content = content.replace('reinterpret_cast<void**>', 'reinterpret_cast<JNIEnv**>')
-          content = content.replace('reinterpret_cast<void **>', 'reinterpret_cast<JNIEnv**>')
+              portal = f.read()
+          portal = portal.replace('reinterpret_cast<void**>', 'reinterpret_cast<JNIEnv**>')
+          portal = portal.replace('reinterpret_cast<void **>', 'reinterpret_cast<JNIEnv**>')
           with open('java/rocksjni/portal.h', 'w') as f:
-              f.write(content)
+              f.write(portal)
           
-          # 2. Can thiệp sâu vào java/CMakeLists.txt để gỡ bỏ hoàn toàn liên kết động
+          # 2. Thay thế tận gốc cơ chế liên kết trong java/CMakeLists.txt
           with open('java/CMakeLists.txt', 'r') as f:
-              cmake_content = f.read()
+              cmake = f.read()
           
-          # Thay thế bất kỳ cấu hình liên kết động nào liên quan đến rocksdb-shared sang thư viện tĩnh rocksdb
-          cmake_content = cmake_content.replace('rocksdb-shared', 'rocksdb')
+          # Đổi rocksdb-shared thành rocksdb (tĩnh) trong toàn bộ file
+          cmake = cmake.replace('rocksdb-shared', 'rocksdb')
           
-          # Thêm lệnh ép buộc liên kết tĩnh thủ công ở cuối file để chắc chắn
-          cmake_content += '\n\ntarget_link_libraries(rocksdbjni PRIVATE rocksdb)\n'
+          # Ép thuộc tính liên kết tĩnh cho thư viện runtime C++ của Android
+          cmake = cmake.replace('add_library(rocksdbjni SHARED', 'add_library(rocksdbjni SHARED)\n#')
           
           with open('java/CMakeLists.txt', 'w') as f:
-              f.write(cmake_content)
-          print('-> Đã cấu hình ép liên kết tĩnh sâu vào java/CMakeLists.txt')
+              f.write(cmake)
+          print('-> Đã cấu trúc lại java/CMakeLists.txt thành công!')
           "
 
-      - name: Cấu hình CMake với chế độ độc lập và cờ hệ thống NDK
+      - name: Cấu hình CMake độc lập toàn phần
         run: |
           mkdir build && cd build
           cmake .. \
@@ -62,7 +62,7 @@ jobs:
             -DROCKSDB_BUILD_TESTS=OFF \
             -DROCKSDB_BUILD_SHARED_LIBS=OFF \
             -DCMAKE_CXX_FLAGS="-static-libstdc++" \
-            -DCMAKE_SHARED_LINKER_FLAGS="-static-libstdc++" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-static-libstdc++ -Wl,--exclude-libs,ALL" \
             -DCMAKE_BUILD_TYPE=Release
 
       - name: Tiến hành Biên dịch ra file .so độc lập
