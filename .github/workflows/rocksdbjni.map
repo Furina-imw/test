@@ -1,0 +1,15 @@
+# rocksdbjni.map
+# Linker version script — chỉ export JNI symbols ra ngoài,
+# ẩn toàn bộ symbol nội bộ của RocksDB & dependencies.
+
+{
+  global:
+    # JNI entry points được Android Runtime gọi
+    Java_org_rocksdb_*;
+    JNI_OnLoad;
+    JNI_OnUnload;
+
+  local:
+    # Tất cả symbol còn lại → ẩn (không xuất ra bảng dynamic)
+    *;
+};
