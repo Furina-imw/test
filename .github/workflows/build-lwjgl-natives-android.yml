@@ -109,6 +109,25 @@ jobs:
           # lives in the core module, not in zstd.
           CORE_DIR="${{ github.workspace }}/modules/lwjgl/core/src/main/c"
 
+          # common_tools.h and the generated JNI wrappers call DISABLE_WARNINGS() /
+          # ENABLE_WARNINGS() (and some bindings use JNIEXPORT_CRITICAL) without ever
+          # defining them. Upstream LWJGL supplies these via a per-OS config header
+          # (LinuxConfig.h / macOSConfig.h / WindowsConfig.h / OpenBSDConfig.h) that the
+          # official ant build force-includes for every translation unit. There is no
+          # such header for Android, so provide a minimal clang-safe stub ourselves
+          # (same no-op approach the community OpenBSD port uses for compilers other
+          # than the upstream-assumed one).
+          COMPAT_HEADER="${{ github.workspace }}/android-jni-compat.h"
+          cat > "${COMPAT_HEADER}" << 'EOF'
+          #pragma once
+          #include <stddef.h>
+          #include <inttypes.h>
+
+          #define DISABLE_WARNINGS()
+          #define ENABLE_WARNINGS()
+          #define JNIEXPORT_CRITICAL static
+          EOF
+
           # Collect all C sources: JNI wrappers + bundled zstd + xxhash + core JNI helper
           ALL_C=$(find "${ZSTD_DIR}" -name "*.c" | tr '\n' ' ')
           ALL_C="${ALL_C} ${XXHASH_DIR}/xxhash.c ${CORE_DIR}/common_tools.c"
@@ -124,6 +143,7 @@ jobs:
           FLAGS="-O2 -fPIC -fvisibility=hidden -DNDEBUG \
                  -DOS_ANDROID -DANDROID \
                  -DZSTD_MULTITHREAD=0 \
+                 -include ${COMPAT_HEADER} \
                  -Wno-unused-parameter -Wno-sign-compare"
 
           "${CC}" ${FLAGS} ${INC} \
