@@ -1,0 +1,251 @@
+name: Build LWJGL natives Android arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      lwjgl_version:
+        description: 'LWJGL version'
+        required: true
+        default: '3.4.1'
+      ndk_version:
+        description: 'Android NDK version'
+        required: true
+        default: '27.2.12479018'
+      min_sdk:
+        description: 'Minimum Android API level'
+        required: true
+        default: '21'
+
+env:
+  LWJGL_VERSION: ${{ github.event.inputs.lwjgl_version || '3.4.1' }}
+  NDK_VERSION:   ${{ github.event.inputs.ndk_version   || '27.2.12479018' }}
+  MIN_SDK:       ${{ github.event.inputs.min_sdk       || '21' }}
+
+jobs:
+  build:
+    name: Build lwjgl-zstd arm64-v8a
+    runs-on: ubuntu-22.04
+
+    steps:
+      # ────────────────────────────────────────────────────────────
+      # 1. Checkout LWJGL source
+      # ────────────────────────────────────────────────────────────
+      - name: Checkout LWJGL ${{ env.LWJGL_VERSION }}
+        uses: actions/checkout@v4
+        with:
+          repository: LWJGL/lwjgl3
+          ref: ${{ env.LWJGL_VERSION }}
+          fetch-depth: 1
+
+      # ────────────────────────────────────────────────────────────
+      # 2. JDK 17
+      # ────────────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ────────────────────────────────────────────────────────────
+      # 3. Android NDK
+      # ────────────────────────────────────────────────────────────
+      - name: Set up Android NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'ndk;${{ env.NDK_VERSION }}'
+
+      # ────────────────────────────────────────────────────────────
+      # 4. Install tools
+      # ────────────────────────────────────────────────────────────
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            zip unzip curl git
+
+      # ────────────────────────────────────────────────────────────
+      # 5. Export toolchain
+      # ────────────────────────────────────────────────────────────
+      - name: Export toolchain paths
+        run: |
+          NDK_ROOT="${ANDROID_SDK_ROOT}/ndk/${{ env.NDK_VERSION }}"
+          TOOLCHAIN="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
+          CLANG_TRIPLE="aarch64-linux-android${{ env.MIN_SDK }}"
+
+          echo "NDK_ROOT=${NDK_ROOT}"         >> $GITHUB_ENV
+          echo "TOOLCHAIN=${TOOLCHAIN}"       >> $GITHUB_ENV
+          echo "CLANG_TRIPLE=${CLANG_TRIPLE}" >> $GITHUB_ENV
+          echo "CC=${TOOLCHAIN}/bin/${CLANG_TRIPLE}-clang"    >> $GITHUB_ENV
+          echo "STRIP=${TOOLCHAIN}/bin/llvm-strip"            >> $GITHUB_ENV
+
+          OUT_DIR="${{ github.workspace }}/output"
+          mkdir -p "${OUT_DIR}"
+          echo "OUT_DIR=${OUT_DIR}" >> $GITHUB_ENV
+
+      # ────────────────────────────────────────────────────────────
+      # 6. Inspect source layout (debug step)
+      # ────────────────────────────────────────────────────────────
+      - name: Inspect LWJGL source layout
+        run: |
+          echo "=== modules/lwjgl/ ==="
+          ls ${{ github.workspace }}/modules/lwjgl/ | grep -E "zstd"
+
+          echo "=== zstd src ==="
+          find ${{ github.workspace }}/modules/lwjgl/zstd/src -name "*.c" -o -name "*.h" | head -30
+
+      # ────────────────────────────────────────────────────────────
+      # 7. Build liblwjgl_zstd.so
+      #    Sources: modules/lwjgl/zstd/src/
+      #      - generated/c/  → JNI wrapper .c files
+      #      - main/c/       → bundled zstd library
+      # ────────────────────────────────────────────────────────────
+      - name: Build liblwjgl_zstd.so
+        run: |
+          ZSTD_DIR="${{ github.workspace }}/modules/lwjgl/zstd/src"
+
+          # Collect all C sources (JNI wrappers + bundled zstd)
+          ALL_C=$(find "${ZSTD_DIR}" -name "*.c" | tr '\n' ' ')
+          echo "Sources: $(echo ${ALL_C} | wc -w) files"
+
+          # Include: bundled zstd headers + JDK JNI headers
+          INC="-I${ZSTD_DIR}/main/c \
+               -I${JAVA_HOME}/include \
+               -I${JAVA_HOME}/include/linux"
+
+          FLAGS="-O2 -fPIC -fvisibility=hidden -DNDEBUG \
+                 -DOS_ANDROID -DANDROID \
+                 -DZSTD_MULTITHREAD=0 \
+                 -Wno-unused-parameter -Wno-sign-compare"
+
+          "${CC}" ${FLAGS} ${INC} \
+            -shared \
+            -Wl,-soname,liblwjgl_zstd.so \
+            -Wl,--exclude-libs,ALL \
+            ${ALL_C} \
+            -lm \
+            -o "${OUT_DIR}/liblwjgl_zstd.so"
+
+          file "${OUT_DIR}/liblwjgl_zstd.so"
+          ls -lh "${OUT_DIR}/liblwjgl_zstd.so"
+
+      # ────────────────────────────────────────────────────────────
+      # 9. Strip + verify no non-system deps
+      # ────────────────────────────────────────────────────────────
+      - name: Strip and verify
+        run: |
+          READELF="${TOOLCHAIN}/bin/llvm-readelf"
+          ALLOWED="^(libc|libm|libdl|liblog)\\.so"
+
+          for SO in "${OUT_DIR}"/lib*.so; do
+            "${STRIP}" --strip-unneeded "${SO}"
+            echo "=== $(basename ${SO}) ==="
+            ls -lh "${SO}"
+            "${READELF}" -d "${SO}" | grep NEEDED || echo "(no deps)"
+
+            BAD=$("${READELF}" -d "${SO}" \
+              | grep NEEDED \
+              | grep -oP '\[\K[^\]]+' \
+              | grep -Pv "${ALLOWED}" || true)
+
+            if [ -n "${BAD}" ]; then
+              echo "❌ Non-system deps: ${BAD}"
+              exit 1
+            fi
+            echo "✅ Clean"
+          done
+
+      # ────────────────────────────────────────────────────────────
+      # 10. Repack into jars matching original LWJGL format
+      #     Path inside jar: linux/arm64/org/lwjgl/zstd/liblwjgl_zstd.so
+      # ────────────────────────────────────────────────────────────
+      - name: Repack into native jars
+        run: |
+          JAR_DIR="${{ github.workspace }}/jars"
+          mkdir -p "${JAR_DIR}"
+
+          for LIB in zstd; do
+            SO="${OUT_DIR}/liblwjgl_${LIB}.so"
+            [ -f "${SO}" ] || { echo "❌ Missing ${SO}"; exit 1; }
+
+            WORK="/tmp/jar-${LIB}"
+            INNER="linux/arm64/org/lwjgl/${LIB}"
+            META="META-INF/linux/arm64/org/lwjgl/${LIB}"
+            mkdir -p "${WORK}/${INNER}" "${WORK}/META-INF" "${WORK}/${META}"
+
+            cp "${SO}" "${WORK}/${INNER}/liblwjgl_${LIB}.so"
+
+            # SHA1
+            sha1sum "${SO}" | awk '{print $1}' \
+              > "${WORK}/${META}/liblwjgl_${LIB}.so.sha1"
+
+            # MANIFEST.MF
+            cat > "${WORK}/META-INF/MANIFEST.MF" << EOF
+          Manifest-Version: 1.0
+          Specification-Title: Lightweight Java Game Library - ${LIB}
+          Specification-Version: ${{ env.LWJGL_VERSION }}
+          Implementation-Title: lwjgl-${LIB}
+          Implementation-Version: build android-arm64
+          LWJGL-Platform: linux/arm64
+          Multi-Release: true
+          EOF
+
+            # fabric.mod.json
+            cat > "${WORK}/fabric.mod.json" << EOF
+          {
+            "schemaVersion": 1,
+            "id": "org_lwjgl_lwjgl-${LIB}_natives-linux",
+            "version": "${{ env.LWJGL_VERSION }}",
+            "name": "lwjgl-${LIB}",
+            "custom": { "fabric-loom:generated": true }
+          }
+          EOF
+
+            JAR_OUT="${JAR_DIR}/lwjgl-${LIB}-${{ env.LWJGL_VERSION }}-natives-linux-arm64-android.jar"
+            cd "${WORK}" && zip -r "${JAR_OUT}" . && cd -
+
+            echo "✅ $(basename ${JAR_OUT}) — $(ls -lh ${JAR_OUT} | awk '{print $5}')"
+          done
+
+      # ────────────────────────────────────────────────────────────
+      # 11. Upload
+      # ────────────────────────────────────────────────────────────
+      - name: Upload .so files
+        uses: actions/upload-artifact@v4
+        with:
+          name: lwjgl-zstd-so-android-arm64-${{ env.LWJGL_VERSION }}
+          path: ${{ env.OUT_DIR }}/*.so
+          retention-days: 30
+
+      - name: Upload native jars
+        uses: actions/upload-artifact@v4
+        with:
+          name: lwjgl-zstd-jar-android-arm64-${{ env.LWJGL_VERSION }}
+          path: ${{ github.workspace }}/jars/*.jar
+          retention-days: 30
+
+      # ────────────────────────────────────────────────────────────
+      # 12. Summary
+      # ────────────────────────────────────────────────────────────
+      - name: Build summary
+        if: always()
+        run: |
+          echo "## Build Result" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Library | Size | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
+          for LIB in zstd; do
+            SO="${OUT_DIR}/liblwjgl_${LIB}.so"
+            if [ -f "${SO}" ]; then
+              SIZE=$(ls -lh "${SO}" | awk '{print $5}')
+              echo "| \`liblwjgl_${LIB}.so\` | ${SIZE} | ✅ |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| \`liblwjgl_${LIB}.so\` | — | ❌ |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **LWJGL** | \`${{ env.LWJGL_VERSION }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **NDK** | \`${{ env.NDK_VERSION }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **ABI** | arm64-v8a |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Min API** | \`${{ env.MIN_SDK }}\` |" >> $GITHUB_STEP_SUMMARY
