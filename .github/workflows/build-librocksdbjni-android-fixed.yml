@@ -1,0 +1,523 @@
+name: Build librocksdbjni Android arm64-v8a
+
+on:
+  workflow_dispatch:
+    inputs:
+      rocksdb_version:
+        description: 'RocksDB version'
+        required: true
+        default: '10.2.1'
+      ndk_version:
+        description: 'Android NDK version'
+        required: true
+        default: '27.2.12479018'
+      min_sdk:
+        description: 'Minimum Android API level'
+        required: true
+        default: '21'
+
+env:
+  ROCKSDB_VERSION: ${{ github.event.inputs.rocksdb_version || '10.2.1' }}
+  NDK_VERSION:     ${{ github.event.inputs.ndk_version     || '27.2.12479018' }}
+  MIN_SDK:         ${{ github.event.inputs.min_sdk         || '21' }}
+  ABI:             arm64-v8a
+  CLANG_TRIPLE:    aarch64-linux-android21
+
+jobs:
+  build:
+    name: Build librocksdbjni arm64-v8a
+    runs-on: ubuntu-22.04
+
+    steps:
+      # ────────────────────────────────────────────────────────────
+      # 1. Checkout RocksDB
+      # ────────────────────────────────────────────────────────────
+      - name: Checkout RocksDB ${{ env.ROCKSDB_VERSION }}
+        uses: actions/checkout@v4
+        with:
+          repository: facebook/rocksdb
+          ref: v${{ env.ROCKSDB_VERSION }}
+          submodules: recursive
+          fetch-depth: 1
+
+      # ────────────────────────────────────────────────────────────
+      # 2. JDK 17
+      # ────────────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ────────────────────────────────────────────────────────────
+      # 3. Android NDK  (không cài thêm cmake để tránh conflict)
+      # ────────────────────────────────────────────────────────────
+      - name: Set up Android NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'ndk;${{ env.NDK_VERSION }}'
+
+      # ────────────────────────────────────────────────────────────
+      # 4. Build tools hệ thống
+      # ────────────────────────────────────────────────────────────
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build autoconf automake libtool \
+            curl git zip unzip
+
+      # ────────────────────────────────────────────────────────────
+      # 5. Thiết lập biến môi trường toolchain
+      # ────────────────────────────────────────────────────────────
+      - name: Export toolchain paths
+        run: |
+          NDK_ROOT="${ANDROID_SDK_ROOT}/ndk/${{ env.NDK_VERSION }}"
+          TOOLCHAIN="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
+          CLANG_TRIPLE="aarch64-linux-android${{ env.MIN_SDK }}"
+
+          echo "NDK_ROOT=${NDK_ROOT}"         >> $GITHUB_ENV
+          echo "TOOLCHAIN=${TOOLCHAIN}"       >> $GITHUB_ENV
+          echo "CLANG_TRIPLE=${CLANG_TRIPLE}" >> $GITHUB_ENV
+
+          echo "CC=${TOOLCHAIN}/bin/${CLANG_TRIPLE}-clang"     >> $GITHUB_ENV
+          echo "CXX=${TOOLCHAIN}/bin/${CLANG_TRIPLE}-clang++"  >> $GITHUB_ENV
+          echo "AR=${TOOLCHAIN}/bin/llvm-ar"                   >> $GITHUB_ENV
+          echo "RANLIB=${TOOLCHAIN}/bin/llvm-ranlib"           >> $GITHUB_ENV
+          echo "STRIP=${TOOLCHAIN}/bin/llvm-strip"             >> $GITHUB_ENV
+          echo "NM=${TOOLCHAIN}/bin/llvm-nm"                   >> $GITHUB_ENV
+
+          DEPS_INSTALL="${{ github.workspace }}/deps-install"
+          echo "DEPS_INSTALL=${DEPS_INSTALL}" >> $GITHUB_ENV
+          mkdir -p "${DEPS_INSTALL}/include" "${DEPS_INSTALL}/lib"
+
+          # Toolchain file dùng chung cho tất cả CMake deps
+          TOOLCHAIN_FILE="${NDK_ROOT}/build/cmake/android.toolchain.cmake"
+          echo "TOOLCHAIN_FILE=${TOOLCHAIN_FILE}" >> $GITHUB_ENV
+
+      # ────────────────────────────────────────────────────────────
+      # 6. Build zlib (static) — dùng CMake để cross-compile đúng
+      # ────────────────────────────────────────────────────────────
+      - name: Build zlib (static)
+        run: |
+          ZLIB_VERSION="1.3.1"
+          # GitHub releases của madler/zlib — URL cố định, không bị 404 như zlib.net
+          curl -fsSL "https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz" \
+            | tar xz -C /tmp
+          cd "/tmp/zlib-${ZLIB_VERSION}"
+          mkdir build && cd build
+
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}" \
+            -DANDROID_ABI="${{ env.ABI }}" \
+            -DANDROID_PLATFORM="android-${{ env.MIN_SDK }}" \
+            -DANDROID_STL="c++_static" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${DEPS_INSTALL}" \
+            -DZLIB_BUILD_EXAMPLES=OFF \
+            -DBUILD_SHARED_LIBS=OFF
+
+          ninja -j$(nproc)
+          ninja install
+          # Đảm bảo chỉ có .a
+          rm -f "${DEPS_INSTALL}/lib/libz.so"* 2>/dev/null || true
+
+      # ────────────────────────────────────────────────────────────
+      # 7. Build liblz4 (static) — dùng CMake
+      # ────────────────────────────────────────────────────────────
+      - name: Build liblz4 (static)
+        run: |
+          LZ4_VERSION="1.9.4"
+          curl -fsSL "https://github.com/lz4/lz4/archive/refs/tags/v${LZ4_VERSION}.tar.gz" \
+            | tar xz -C /tmp
+          cd "/tmp/lz4-${LZ4_VERSION}/build/cmake"
+          mkdir build && cd build
+
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}" \
+            -DANDROID_ABI="${{ env.ABI }}" \
+            -DANDROID_PLATFORM="android-${{ env.MIN_SDK }}" \
+            -DANDROID_STL="c++_static" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${DEPS_INSTALL}" \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLZ4_BUILD_CLI=OFF \
+            -DLZ4_BUILD_LEGACY_LZ4C=OFF
+
+          ninja -j$(nproc)
+          ninja install
+          rm -f "${DEPS_INSTALL}/lib/liblz4.so"* 2>/dev/null || true
+
+      # ────────────────────────────────────────────────────────────
+      # 8. Build libsnappy (static)
+      # ────────────────────────────────────────────────────────────
+      - name: Build libsnappy (static)
+        run: |
+          SNAPPY_VERSION="1.2.1"
+          curl -fsSL "https://github.com/google/snappy/archive/refs/tags/${SNAPPY_VERSION}.tar.gz" \
+            | tar xz -C /tmp
+          cd "/tmp/snappy-${SNAPPY_VERSION}"
+          mkdir build && cd build
+
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}" \
+            -DANDROID_ABI="${{ env.ABI }}" \
+            -DANDROID_PLATFORM="android-${{ env.MIN_SDK }}" \
+            -DANDROID_STL="c++_static" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${DEPS_INSTALL}" \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DSNAPPY_BUILD_TESTS=OFF \
+            -DSNAPPY_BUILD_BENCHMARKS=OFF \
+            -DSNAPPY_INSTALL=ON
+
+          ninja -j$(nproc)
+          ninja install
+          rm -f "${DEPS_INSTALL}/lib/libsnappy.so"* 2>/dev/null || true
+
+      # ────────────────────────────────────────────────────────────
+      # 9. Build libbz2 (static) — cross-compile thủ công
+      #    (bzip2 chưa có CMakeLists chuẩn, dùng Makefile với CC override)
+      # ────────────────────────────────────────────────────────────
+      - name: Build libbz2 (static)
+        run: |
+          BZ2_VERSION="1.0.8"
+          # Mirror GitHub của bzip2 (sourceware.org đôi khi chậm)
+          curl -fsSL "https://github.com/libarchive/bzip2/archive/refs/tags/bzip2-${BZ2_VERSION}.tar.gz" \
+            | tar xz -C /tmp
+          cd "/tmp/bzip2-bzip2-${BZ2_VERSION}"
+
+          # Build chỉ static lib, không cần binary
+          make -j$(nproc) libbz2.a \
+            CC="${CC}" \
+            AR="${AR}" \
+            RANLIB="${RANLIB}" \
+            CFLAGS="-fPIC -O2 -D_FILE_OFFSET_BITS=64"
+
+          install -D libbz2.a "${DEPS_INSTALL}/lib/libbz2.a"
+          install -D bzlib.h  "${DEPS_INSTALL}/include/bzlib.h"
+
+      # ────────────────────────────────────────────────────────────
+      # 10. Build libzstd (static)
+      # ────────────────────────────────────────────────────────────
+      - name: Build libzstd (static)
+        run: |
+          ZSTD_VERSION="1.5.6"
+          curl -fsSL "https://github.com/facebook/zstd/archive/refs/tags/v${ZSTD_VERSION}.tar.gz" \
+            | tar xz -C /tmp
+          cd "/tmp/zstd-${ZSTD_VERSION}/build/cmake"
+          mkdir build && cd build
+
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}" \
+            -DANDROID_ABI="${{ env.ABI }}" \
+            -DANDROID_PLATFORM="android-${{ env.MIN_SDK }}" \
+            -DANDROID_STL="c++_static" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${DEPS_INSTALL}" \
+            -DZSTD_BUILD_STATIC=ON \
+            -DZSTD_BUILD_SHARED=OFF \
+            -DZSTD_BUILD_PROGRAMS=OFF \
+            -DZSTD_BUILD_TESTS=OFF
+
+          ninja -j$(nproc)
+          ninja install
+          rm -f "${DEPS_INSTALL}/lib/libzstd.so"* 2>/dev/null || true
+
+      # ────────────────────────────────────────────────────────────
+      # 11. Kiểm tra deps đã build xong
+      # ────────────────────────────────────────────────────────────
+      - name: Verify deps
+        run: |
+          echo "=== Static libraries in DEPS_INSTALL ==="
+          find "${DEPS_INSTALL}/lib" -name "*.a" | sort
+          echo ""
+          echo "=== Headers ==="
+          ls "${DEPS_INSTALL}/include/"
+
+          for lib in libz liblz4 libsnappy libbz2 libzstd; do
+            if ls "${DEPS_INSTALL}/lib/${lib}.a" 2>/dev/null; then
+              echo "✅ ${lib}.a OK"
+            else
+              echo "❌ ${lib}.a MISSING"
+              exit 1
+            fi
+          done
+
+      # ────────────────────────────────────────────────────────────
+      # 12. Generate JNI headers từ Java source của RocksDB
+      # ────────────────────────────────────────────────────────────
+      - name: Generate JNI headers
+        working-directory: ${{ github.workspace }}
+        run: |
+          JAVA_SRC_DIR="java/src/main/java"
+          JNI_CLASSES_DIR="${{ github.workspace }}/java_classes"
+          JNI_HEADER_DIR="${{ github.workspace }}/java/include"
+          mkdir -p "${JNI_CLASSES_DIR}" "${JNI_HEADER_DIR}"
+
+          find "${JAVA_SRC_DIR}" -name "*.java" > /tmp/java_sources.txt
+          echo "Found $(wc -l < /tmp/java_sources.txt) Java source files"
+
+          # --release 8 thay vì -source/-target để tương thích JDK 17
+          javac \
+            --release 8 \
+            -d "${JNI_CLASSES_DIR}" \
+            -cp "${JAVA_SRC_DIR}" \
+            -h "${JNI_HEADER_DIR}" \
+            @/tmp/java_sources.txt
+
+          echo "Generated $(find ${JNI_HEADER_DIR} -name '*.h' | wc -l) JNI header files"
+
+      # ────────────────────────────────────────────────────────────
+      # 13. Build RocksDB core → librocksdb.a (static)
+      #     Pass các biến tìm kiếm deps đúng theo FindXxx.cmake của RocksDB
+      # ────────────────────────────────────────────────────────────
+      - name: Build librocksdb.a (static)
+        working-directory: ${{ github.workspace }}
+        run: |
+          BUILD_DIR="${{ github.workspace }}/build-arm64"
+          mkdir -p "${BUILD_DIR}"
+
+          cmake -S . -B "${BUILD_DIR}" \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}" \
+            -DANDROID_ABI="${{ env.ABI }}" \
+            -DANDROID_PLATFORM="android-${{ env.MIN_SDK }}" \
+            -DANDROID_STL="c++_static" \
+            -DCMAKE_BUILD_TYPE=Release \
+            \
+            -DCMAKE_PREFIX_PATH="${DEPS_INSTALL}" \
+            \
+            -DWITH_ZLIB=ON \
+            -DZLIB_ROOT="${DEPS_INSTALL}" \
+            -DZLIB_LIBRARY="${DEPS_INSTALL}/lib/libz.a" \
+            -DZLIB_INCLUDE_DIR="${DEPS_INSTALL}/include" \
+            \
+            -DWITH_LZ4=ON \
+            -Dlz4_FOUND=TRUE \
+            -Dlz4_LIBRARIES="${DEPS_INSTALL}/lib/liblz4.a" \
+            -Dlz4_INCLUDE_DIRS="${DEPS_INSTALL}/include" \
+            \
+            -DWITH_SNAPPY=ON \
+            -DSnappy_FOUND=TRUE \
+            -DSnappy_LIBRARIES="${DEPS_INSTALL}/lib/libsnappy.a" \
+            -DSnappy_INCLUDE_DIRS="${DEPS_INSTALL}/include" \
+            \
+            -DWITH_BZ2=ON \
+            -DBZIP2_LIBRARIES="${DEPS_INSTALL}/lib/libbz2.a" \
+            -DBZIP2_INCLUDE_DIR="${DEPS_INSTALL}/include" \
+            \
+            -DWITH_ZSTD=ON \
+            -Dzstd_FOUND=TRUE \
+            -DZSTD_LIBRARIES="${DEPS_INSTALL}/lib/libzstd.a" \
+            -DZSTD_INCLUDE_DIRS="${DEPS_INSTALL}/include" \
+            \
+            -DWITH_TESTS=OFF \
+            -DWITH_TOOLS=OFF \
+            -DWITH_BENCHMARK_TOOLS=OFF \
+            -DWITH_CORE_TOOLS=OFF \
+            -DWITH_EXAMPLES=OFF \
+            -DWITH_GFLAGS=OFF \
+            -DWITH_LIBURING=OFF \
+            -DWITH_NUMA=OFF \
+            -DWITH_TBB=OFF \
+            -DWITH_FOLLY_DISTRIBUTED_MUTEX=OFF \
+            \
+            -DPORTABLE=ON \
+            -DFORCE_SSE42=OFF \
+            -DFAIL_ON_WARNINGS=OFF \
+            \
+            -DCMAKE_CXX_FLAGS="-DPOSIX_MADV_NORMAL=MADV_NORMAL -DPOSIX_MADV_RANDOM=MADV_RANDOM -DPOSIX_MADV_SEQUENTIAL=MADV_SEQUENTIAL -DPOSIX_MADV_WILLNEED=MADV_WILLNEED -DPOSIX_MADV_DONTNEED=MADV_DONTNEED" \
+            -DROCKSDB_BUILD_SHARED=OFF \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DJNI=OFF
+
+          cmake --build "${BUILD_DIR}" --target rocksdb -j$(nproc)
+
+          echo "=== librocksdb.a ==="
+          ls -lh "${BUILD_DIR}/librocksdb.a"
+
+          echo "BUILD_DIR=${BUILD_DIR}" >> $GITHUB_ENV
+
+      # ────────────────────────────────────────────────────────────
+      # 14. Compile JNI wrapper objects (.cc → .o)
+      # ────────────────────────────────────────────────────────────
+      - name: Compile JNI wrapper objects
+        run: |
+          OBJ_DIR="${BUILD_DIR}/jni_objs"
+          mkdir -p "${OBJ_DIR}"
+
+          JNI_SRC_DIR="${{ github.workspace }}/java/rocksjni"
+          INCLUDE_FLAGS="\
+            -I${{ github.workspace }}/include \
+            -I${{ github.workspace }}/java \
+            -I${{ github.workspace }}/java/rocksjni \
+            -I${DEPS_INSTALL}/include \
+            -I${JAVA_HOME}/include \
+            -I${JAVA_HOME}/include/linux"
+
+          COMPILE_FLAGS="-fPIC -O2 -std=c++17 -frtti -fexceptions -DNDEBUG"
+
+          FAILED=0
+          for src in "${JNI_SRC_DIR}"/*.cc; do
+            [ -f "${src}" ] || continue
+            base="${src##*/}"          # filename.cc
+            name="${base%.cc}"         # filename
+            out="${OBJ_DIR}/${name}.o"
+            echo "Compiling: ${base}"
+            if ! "${CXX}" ${COMPILE_FLAGS} ${INCLUDE_FLAGS} -c "${src}" -o "${out}"; then
+              echo "❌ Failed: ${base}"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          OBJ_COUNT=$(find "${OBJ_DIR}" -name "*.o" | wc -l)
+          echo "Compiled ${OBJ_COUNT} JNI objects, ${FAILED} failures"
+          [ "${FAILED}" -eq 0 ] || exit 1
+
+          echo "OBJ_DIR=${OBJ_DIR}" >> $GITHUB_ENV
+
+      # ────────────────────────────────────────────────────────────
+      # 15. Link thành 1 librocksdbjni.so duy nhất (self-contained)
+      # ────────────────────────────────────────────────────────────
+      - name: Link librocksdbjni.so (self-contained)
+        run: |
+          OUT_DIR="${{ github.workspace }}/output/arm64-v8a"
+          mkdir -p "${OUT_DIR}"
+          OUT_SO="${OUT_DIR}/librocksdbjni.so"
+
+          # Tạo version script inline — chỉ export JNI symbols
+          cat > /tmp/rocksdbjni.map << 'MAP_EOF'
+          {
+            global:
+              Java_org_rocksdb_*;
+              JNI_OnLoad;
+              JNI_OnUnload;
+            local:
+              *;
+          };
+          MAP_EOF
+
+          # libc++_static.a từ NDK để link C++ runtime tĩnh
+          LIBCXX_STATIC="${TOOLCHAIN}/sysroot/usr/lib/aarch64-linux-android/libc++_static.a"
+          LIBCXX_ABI="${TOOLCHAIN}/sysroot/usr/lib/aarch64-linux-android/libc++abi.a"
+
+          # Tất cả object files JNI
+          JNI_OBJS=$(find "${OBJ_DIR}" -name "*.o" | tr '\n' ' ')
+
+          "${CXX}" \
+            -shared \
+            -fPIC \
+            -Wl,-soname,librocksdbjni.so \
+            -Wl,--gc-sections \
+            -Wl,--version-script=/tmp/rocksdbjni.map \
+            ${JNI_OBJS} \
+            -Wl,--whole-archive \
+              "${BUILD_DIR}/librocksdb.a" \
+              "${DEPS_INSTALL}/lib/libz.a" \
+              "${DEPS_INSTALL}/lib/liblz4.a" \
+              "${DEPS_INSTALL}/lib/libsnappy.a" \
+              "${DEPS_INSTALL}/lib/libbz2.a" \
+              "${DEPS_INSTALL}/lib/libzstd.a" \
+            -Wl,--no-whole-archive \
+            -Wl,--whole-archive \
+              "${LIBCXX_STATIC}" \
+              "${LIBCXX_ABI}" \
+            -Wl,--no-whole-archive \
+            -Wl,--exclude-libs,ALL \
+            -llog \
+            -lm \
+            -Wl,--build-id=sha1 \
+            -o "${OUT_SO}"
+
+          # Strip debug symbols
+          "${STRIP}" --strip-unneeded "${OUT_SO}"
+
+          echo "=== Output ==="
+          ls -lh "${OUT_SO}"
+          file  "${OUT_SO}"
+
+          echo "OUT_SO=${OUT_SO}" >> $GITHUB_ENV
+
+      # ────────────────────────────────────────────────────────────
+      # 16. Verify: không có dependency .so ngoài system
+      # ────────────────────────────────────────────────────────────
+      - name: Verify — no non-system .so dependencies
+        run: |
+          READELF="${TOOLCHAIN}/bin/llvm-readelf"
+
+          echo "=== NEEDED entries ==="
+          "${READELF}" -d "${OUT_SO}" | grep NEEDED || echo "(none)"
+
+          # Chỉ cho phép Android system libs
+          ALLOWED_PATTERN="^(liblog|libc|libm|libdl|libstdc\+\+|libandroid)\.so$"
+
+          BAD=$("${READELF}" -d "${OUT_SO}" \
+            | grep NEEDED \
+            | grep -oP '\[\K[^\]]+' \
+            | grep -Pv "${ALLOWED_PATTERN}" || true)
+
+          if [ -n "${BAD}" ]; then
+            echo "❌ Non-system dependencies found:"
+            echo "${BAD}"
+            exit 1
+          fi
+          echo "✅ Self-contained check passed — only system .so dependencies"
+
+      # ────────────────────────────────────────────────────────────
+      # 17. Verify: JNI symbols được export đúng
+      # ────────────────────────────────────────────────────────────
+      - name: Verify — JNI symbols exported
+        run: |
+          NM_BIN="${TOOLCHAIN}/bin/llvm-nm"
+
+          COUNT=$("${NM_BIN}" -D --defined-only "${OUT_SO}" \
+            | grep -c "Java_org_rocksdb" || true)
+          echo "Exported JNI symbols: ${COUNT}"
+
+          "${NM_BIN}" -D --defined-only "${OUT_SO}" \
+            | grep "Java_org_rocksdb" \
+            | head -10
+
+          if [ "${COUNT}" -lt 10 ]; then
+            echo "❌ Too few JNI symbols (got ${COUNT}, expected ≥ 10)"
+            exit 1
+          fi
+          echo "✅ JNI symbols OK (${COUNT} exported)"
+
+      # ────────────────────────────────────────────────────────────
+      # 18. Upload artifact
+      # ────────────────────────────────────────────────────────────
+      - name: Upload librocksdbjni.so
+        uses: actions/upload-artifact@v4
+        with:
+          name: librocksdbjni-arm64-v8a-${{ env.ROCKSDB_VERSION }}
+          path: ${{ github.workspace }}/output/arm64-v8a/librocksdbjni.so
+          retention-days: 30
+
+      # ────────────────────────────────────────────────────────────
+      # 19. Summary
+      # ────────────────────────────────────────────────────────────
+      - name: Build summary
+        if: always()
+        run: |
+          echo "## Build Result" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f "${OUT_SO}" ]; then
+            SIZE=$(ls -lh "${OUT_SO}" | awk '{print $5}')
+            echo "| | |" >> $GITHUB_STEP_SUMMARY
+            echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+            echo "| **File** | \`librocksdbjni.so\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| **ABI** | \`arm64-v8a\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Size** | ${SIZE} |" >> $GITHUB_STEP_SUMMARY
+            echo "| **RocksDB** | \`${{ env.ROCKSDB_VERSION }}\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| **NDK** | \`${{ env.NDK_VERSION }}\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Min API** | \`${{ env.MIN_SDK }}\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Bundled** | zlib · lz4 · snappy · bz2 · zstd |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Build failed — output file not found" >> $GITHUB_STEP_SUMMARY
+          fi
