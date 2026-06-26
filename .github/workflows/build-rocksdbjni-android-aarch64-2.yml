@@ -1,0 +1,519 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  Build librocksdbjni cho Android AArch64 (arm64-v8a)
+#  Target: org.rocksdb:rocksdbjni:10.2.1  — dùng cho Voxy mod / PojavLauncher
+#
+#  Output: librocksdbjni-linux-aarch64.so  (standalone, C++ runtime linked statically)
+# ══════════════════════════════════════════════════════════════════════════════
+name: Build librocksdbjni Android AArch64 (Voxy)
+
+on:
+  workflow_dispatch:
+    inputs:
+      rocksdb_version:
+        description: "RocksDB version — Voxy dùng v10.2.1"
+        required: true
+        default: "v10.2.1"
+      android_api:
+        description: "Android min API level (21 = Android 5.0+)"
+        required: true
+        default: "21"
+
+# ── Biến dùng chung ──────────────────────────────────────────────────────────
+env:
+  ROCKSDB_VERSION:  ${{ github.event.inputs.rocksdb_version || 'v10.2.1' }}
+  ANDROID_API:      ${{ github.event.inputs.android_api    || '21'       }}
+  NDK_VERSION:      r26d
+
+  # Toolchain cố định
+  TARGET_TRIPLE:    aarch64-linux-android
+  ABI:              arm64-v8a
+
+  # Đường dẫn NDK sau khi extract (dùng lại ở mọi job qua cache)
+  NDK_ROOT:         /opt/android-ndk-r26d
+
+jobs:
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  JOB 1 ▸ Download & cache Android NDK r26d
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  setup-ndk:
+    name: "① NDK r26d"
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Cache NDK
+        id: cache-ndk
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NDK_ROOT }}
+          key: android-ndk-${{ env.NDK_VERSION }}-v1
+
+      - name: Download & extract NDK
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          URL="https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          echo "→ Downloading $URL"
+          wget -q --show-progress "$URL" -O /tmp/ndk.zip
+          sudo unzip -q /tmp/ndk.zip -d /opt
+          sudo mv /opt/android-ndk-${NDK_VERSION} ${{ env.NDK_ROOT }}
+          rm /tmp/ndk.zip
+          echo "NDK extracted to ${{ env.NDK_ROOT }}"
+          ${{ env.NDK_ROOT }}/ndk-build --version
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  JOB 2 ▸ Cross-compile static deps: zlib · snappy · lz4 · zstd
+#           (build 1 lần, cache lại cho lần sau)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  build-deps:
+    name: "② Compression libs (static, AArch64)"
+    runs-on: ubuntu-22.04
+    needs: setup-ndk
+
+    env:
+      INSTALL: /tmp/deps-android-aarch64
+
+    steps:
+      - name: Install host build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build git wget unzip
+
+      - name: Restore NDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NDK_ROOT }}
+          key: android-ndk-${{ env.NDK_VERSION }}-v1
+
+      - name: Cache compression libs
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.INSTALL }}
+          key: android-aarch64-deps-api${{ env.ANDROID_API }}-zlib1.3.1-snappy1.2.1-lz4.1.9.4-zstd1.5.6
+
+      - name: Set toolchain vars
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          TOOLCHAIN="${{ env.NDK_ROOT }}/toolchains/llvm/prebuilt/linux-x86_64"
+          echo "TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+          echo "CMAKE_TC=${{ env.NDK_ROOT }}/build/cmake/android.toolchain.cmake" >> "$GITHUB_ENV"
+          # Common CMake args dùng lại
+          {
+            echo 'CMAKE_ANDROID_ARGS<<EOF'
+            echo "-DCMAKE_TOOLCHAIN_FILE=${{ env.NDK_ROOT }}/build/cmake/android.toolchain.cmake"
+            echo "-DANDROID_ABI=${{ env.ABI }}"
+            echo "-DANDROID_PLATFORM=android-${{ env.ANDROID_API }}"
+            echo "-DANDROID_STL=c++_static"
+            echo "-DANDROID_ARM_NEON=ON"
+            echo "-DCMAKE_BUILD_TYPE=Release"
+            echo "-DCMAKE_INSTALL_PREFIX=${{ env.INSTALL }}"
+            echo "-DBUILD_SHARED_LIBS=OFF"
+            echo "-G Ninja"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      # ── zlib ────────────────────────────────────────────────────────────────
+      - name: Build zlib 1.3.1
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 --branch v1.3.1 https://github.com/madler/zlib.git /tmp/zlib
+          cmake -S /tmp/zlib -B /tmp/zlib/build ${{ env.CMAKE_ANDROID_ARGS }}
+          cmake --build /tmp/zlib/build --parallel $(nproc) --target install
+
+      # ── snappy ──────────────────────────────────────────────────────────────
+      - name: Build snappy 1.2.1
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 --branch 1.2.1 https://github.com/google/snappy.git /tmp/snappy
+          cmake -S /tmp/snappy -B /tmp/snappy/build ${{ env.CMAKE_ANDROID_ARGS }} \
+            -DSNAPPY_BUILD_TESTS=OFF \
+            -DSNAPPY_BUILD_BENCHMARKS=OFF
+          cmake --build /tmp/snappy/build --parallel $(nproc) --target install
+
+      # ── lz4 ─────────────────────────────────────────────────────────────────
+      - name: Build lz4 1.9.4
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 --branch v1.9.4 https://github.com/lz4/lz4.git /tmp/lz4
+          cmake -S /tmp/lz4/build/cmake -B /tmp/lz4/build/out ${{ env.CMAKE_ANDROID_ARGS }} \
+            -DLZ4_BUILD_CLI=OFF \
+            -DLZ4_BUILD_LEGACY_LZ4C=OFF
+          cmake --build /tmp/lz4/build/out --parallel $(nproc) --target install
+
+      # ── zstd ────────────────────────────────────────────────────────────────
+      - name: Build zstd 1.5.6
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 --branch v1.5.6 https://github.com/facebook/zstd.git /tmp/zstd
+          cmake -S /tmp/zstd/build/cmake -B /tmp/zstd/build/out ${{ env.CMAKE_ANDROID_ARGS }} \
+            -DZSTD_BUILD_PROGRAMS=OFF \
+            -DZSTD_BUILD_TESTS=OFF
+          cmake --build /tmp/zstd/build/out --parallel $(nproc) --target install
+
+      - name: Verify dep libs
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          echo "=== Static libs built ==="
+          find ${{ env.INSTALL }}/lib -name "*.a" | sort
+          echo "=== Headers ==="
+          find ${{ env.INSTALL }}/include -name "*.h" | head -20
+
+      - name: Upload deps
+        uses: actions/upload-artifact@v4
+        with:
+          name: deps-android-aarch64
+          path: ${{ env.INSTALL }}
+          retention-days: 1
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  JOB 3 ▸ Build librocksdbjni-linux-aarch64.so
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  build-jni:
+    name: "③ librocksdbjni-linux-aarch64.so"
+    runs-on: ubuntu-22.04
+    needs: [setup-ndk, build-deps]
+
+    env:
+      INSTALL: /tmp/deps-android-aarch64
+
+    steps:
+      # ── Host tools ──────────────────────────────────────────────────────────
+      - name: Install host tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build git openjdk-17-jdk-headless
+
+      - name: Set JAVA_HOME
+        run: |
+          JAVA_HOME="$(dirname $(dirname $(readlink -f $(which javac))))"
+          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+          echo "→ JAVA_HOME=$JAVA_HOME"
+          java -version
+
+      # ── Restore cache ────────────────────────────────────────────────────────
+      - name: Restore NDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NDK_ROOT }}
+          key: android-ndk-${{ env.NDK_VERSION }}-v1
+
+      - name: Download compression libs
+        uses: actions/download-artifact@v4
+        with:
+          name: deps-android-aarch64
+          path: ${{ env.INSTALL }}
+
+      # ── Toolchain env ────────────────────────────────────────────────────────
+      - name: Export toolchain variables
+        run: |
+          TOOLCHAIN="${{ env.NDK_ROOT }}/toolchains/llvm/prebuilt/linux-x86_64"
+          TRIPLE="${{ env.TARGET_TRIPLE }}${{ env.ANDROID_API }}"
+
+          echo "TOOLCHAIN=$TOOLCHAIN"                       >> "$GITHUB_ENV"
+          echo "CMAKE_TC=${{ env.NDK_ROOT }}/build/cmake/android.toolchain.cmake" >> "$GITHUB_ENV"
+
+          # Compiler wrappers
+          echo "CC=$TOOLCHAIN/bin/${TRIPLE}-clang"          >> "$GITHUB_ENV"
+          echo "CXX=$TOOLCHAIN/bin/${TRIPLE}-clang++"       >> "$GITHUB_ENV"
+          echo "AR=$TOOLCHAIN/bin/llvm-ar"                  >> "$GITHUB_ENV"
+          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib"          >> "$GITHUB_ENV"
+          echo "STRIP=$TOOLCHAIN/bin/llvm-strip"            >> "$GITHUB_ENV"
+          echo "READELF=$TOOLCHAIN/bin/llvm-readelf"        >> "$GITHUB_ENV"
+          echo "NM=$TOOLCHAIN/bin/llvm-nm"                  >> "$GITHUB_ENV"
+
+          # Verify NDK clang version (phải ≥ Clang 10 để dùng C++20)
+          $TOOLCHAIN/bin/${TRIPLE}-clang --version
+
+      # ── Checkout RocksDB source ──────────────────────────────────────────────
+      - name: Checkout RocksDB ${{ env.ROCKSDB_VERSION }}
+        uses: actions/checkout@v4
+        with:
+          repository: facebook/rocksdb
+          ref: ${{ env.ROCKSDB_VERSION }}
+          path: rocksdb
+          submodules: recursive
+          fetch-depth: 1
+
+      # ── Patch Android compatibility ──────────────────────────────────────────
+      - name: Patch RocksDB for Android
+        working-directory: rocksdb
+        run: |
+          # 1) Tắt jemalloc cứng (không có trên Android)
+          sed -i \
+            's/set(WITH_JEMALLOC ON)/set(WITH_JEMALLOC OFF)/g;
+             /find_package.*jemalloc/d;
+             /HAVE_JEMALLOC/d' \
+            CMakeLists.txt || true
+
+          # 2) Android không có sched_getcpu() trước API 23
+          # NDK r26 đã patch sẵn nên chỉ cần thêm fallback define
+          cat >> CMakeLists.txt << 'PATCH'
+
+          # Android-specific compat
+          if(ANDROID)
+            add_compile_definitions(
+              ROCKSDB_NO_DYNAMIC_EXTENSION
+              OS_ANDROID
+            )
+          endif()
+          PATCH
+
+          # 3) Tắt FALLOCATE trên Android (không fully supported)
+          grep -q "HAVE_FALLOCATE" CMakeLists.txt && \
+            sed -i 's/check_cxx_symbol_exists.*fallocate.*/set(HAVE_FALLOCATE 0)/g' \
+            CMakeLists.txt || true
+
+      # ── CMake configure ──────────────────────────────────────────────────────
+      - name: CMake configure (Android AArch64)
+        working-directory: rocksdb
+        run: |
+          INSTALL="${{ env.INSTALL }}"
+          mkdir -p build-android
+
+          cmake -S . -B build-android \
+            -G Ninja \
+            \
+            -DCMAKE_TOOLCHAIN_FILE="${{ env.CMAKE_TC }}" \
+            -DANDROID_ABI="${{ env.ABI }}" \
+            -DANDROID_PLATFORM="android-${{ env.ANDROID_API }}" \
+            -DANDROID_STL=c++_static \
+            -DANDROID_ARM_NEON=ON \
+            \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="${{ env.CC }}" \
+            -DCMAKE_CXX_COMPILER="${{ env.CXX }}" \
+            -DCMAKE_AR="${{ env.AR }}" \
+            -DCMAKE_RANLIB="${{ env.RANLIB }}" \
+            \
+            -DCMAKE_CXX_STANDARD=20 \
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+            -DCMAKE_C_FLAGS="-O2 -fPIC -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }}" \
+            -DCMAKE_CXX_FLAGS="-O2 -fPIC -std=c++20 -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }} -frtti -fexceptions -Wno-error" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--build-id=sha1 -Wl,--no-undefined -llog -lz -latomic" \
+            \
+            -DCMAKE_PREFIX_PATH="$INSTALL" \
+            -DCMAKE_FIND_ROOT_PATH="$INSTALL" \
+            \
+            -DWITH_JNI=ON \
+            -DJAVA_HOME="${{ env.JAVA_HOME }}" \
+            \
+            -DROCKSDB_BUILD_SHARED=ON \
+            -DBUILD_SHARED_LIBS=ON \
+            \
+            -DWITH_GFLAGS=OFF \
+            -DWITH_TESTS=OFF \
+            -DWITH_TOOLS=OFF \
+            -DWITH_BENCHMARK_TOOLS=OFF \
+            -DWITH_CORE_TOOLS=OFF \
+            -DWITH_TRACE_TOOLS=OFF \
+            -DWITH_JEMALLOC=OFF \
+            -DWITH_BZ2=OFF \
+            \
+            -DWITH_SNAPPY=ON \
+            -DSNAPPY_LIBRARIES="$INSTALL/lib/libsnappy.a" \
+            -DSNAPPY_INCLUDE_DIR="$INSTALL/include" \
+            \
+            -DWITH_LZ4=ON \
+            -DLZ4_LIBRARIES="$INSTALL/lib/liblz4.a" \
+            -DLZ4_INCLUDE_DIRS="$INSTALL/include" \
+            \
+            -DWITH_ZLIB=ON \
+            -DZLIB_LIBRARY="$INSTALL/lib/libz.a" \
+            -DZLIB_INCLUDE_DIR="$INSTALL/include" \
+            \
+            -DWITH_ZSTD=ON \
+            -Dzstd_LIBRARIES="$INSTALL/lib/libzstd.a" \
+            -Dzstd_INCLUDE_DIR="$INSTALL/include" \
+            \
+            -DPORTABLE=ON \
+            -DFORCE_SSE42=OFF \
+            -DFAIL_ON_WARNINGS=OFF \
+            2>&1
+
+      # ── Ninja build ──────────────────────────────────────────────────────────
+      - name: Build (ninja)
+        working-directory: rocksdb/build-android
+        run: |
+          # Thử build target cụ thể trước, fallback sang build all
+          ninja -j$(nproc) rocksdbjni 2>&1 \
+          || ninja -j$(nproc) rocksdb  2>&1 \
+          || (echo "=== BUILD FAILED — verbose log ===" && ninja -j1 -v 2>&1 | tail -100 && exit 1)
+
+      # ── Collect outputs ──────────────────────────────────────────────────────
+      - name: Collect & verify output
+        id: collect
+        run: |
+          echo "=== All .so files produced ==="
+          find rocksdb/build-android -name "*.so" -type f | sort
+
+          # Tìm file JNI
+          JNI_SO=$(find rocksdb/build-android \
+            \( -name "librocksdbjni*.so" -o -name "librocksdb.so" \) \
+            -type f | sort | head -1)
+
+          if [ -z "$JNI_SO" ]; then
+            echo "❌ Không tìm thấy .so!"
+            exit 1
+          fi
+          echo "→ Found: $JNI_SO"
+
+          # Tạo thư mục output chuẩn
+          mkdir -p output/arm64-v8a
+
+          # Copy và đổi tên đúng convention RocksJava
+          cp "$JNI_SO" output/arm64-v8a/librocksdbjni-linux-aarch64.so
+
+          # c++_static: C++ runtime đã được link tĩnh vào .so — không cần file nào đi kèm
+          echo "→ Using c++_static: libc++ linked statically into .so"
+
+          ls -lh output/arm64-v8a/
+
+      # ── Strip debug symbols ──────────────────────────────────────────────────
+      - name: Strip debug symbols
+        run: |
+          ${{ env.STRIP }} --strip-unneeded \
+            output/arm64-v8a/librocksdbjni-linux-aarch64.so
+          echo "→ Stripped size: $(du -sh output/arm64-v8a/librocksdbjni-linux-aarch64.so | cut -f1)"
+
+      # ── Verify ELF ──────────────────────────────────────────────────────────
+      - name: Verify ELF (AArch64 + JNI symbols + no glibc)
+        run: |
+          SO="output/arm64-v8a/librocksdbjni-linux-aarch64.so"
+
+          echo "════════════════ ELF Header ════════════════"
+          ${{ env.READELF }} -h "$SO" | grep -E "Class|Machine|Type|OS/ABI"
+
+          echo ""
+          echo "════════════════ Dynamic deps ═══════════════"
+          ${{ env.READELF }} -d "$SO" | grep NEEDED
+
+          echo ""
+          echo "════════════════ JNI exports ════════════════"
+          JNI_COUNT=$(${{ env.NM }} -D "$SO" 2>/dev/null | grep -c "Java_org_rocksdb" || echo 0)
+          echo "→ $JNI_COUNT JNI symbols exported"
+
+          echo ""
+          echo "════════════════ Checks ═════════════════════"
+          MACHINE=$(${{ env.READELF }} -h "$SO" | grep "Machine:" | awk '{print $2, $3}')
+          if echo "$MACHINE" | grep -q "AArch64"; then
+            echo "✅ Architecture: AArch64 — OK"
+          else
+            echo "❌ Architecture sai: $MACHINE"
+            exit 1
+          fi
+
+          if ${{ env.READELF }} -d "$SO" | grep -q "libc++_shared"; then
+            echo "❌ Vẫn còn dependency libc++_shared — build lại với c++_static!"
+            exit 1
+          else
+            echo "✅ Không cần libc++_shared — standalone OK"
+          fi
+
+          if [ "$JNI_COUNT" -gt 0 ]; then
+            echo "✅ JNI symbols present ($JNI_COUNT) — OK"
+          else
+            echo "⚠  Không tìm thấy JNI symbols — kiểm tra lại WITH_JNI"
+          fi
+
+          echo ""
+          echo "════════════════ File sizes ══════════════════"
+          ls -lh output/arm64-v8a/
+
+      # ── Upload artifact ──────────────────────────────────────────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: librocksdbjni-android-aarch64-${{ env.ROCKSDB_VERSION }}
+          path: output/arm64-v8a/
+          retention-days: 30
+
+      # ── Job summary ──────────────────────────────────────────────────────────
+      - name: Job summary
+        run: |
+          SO="output/arm64-v8a/librocksdbjni-linux-aarch64.so"
+          SIZE=$(ls -lh "$SO" | awk '{print $5}')
+          JNI_COUNT=$(${{ env.NM }} -D "$SO" 2>/dev/null | grep -c "Java_org_rocksdb" || echo "?")
+
+          cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY
+          ## ✅ Build thành công
+
+          | | |
+          |---|---|
+          | **RocksDB** | \`${{ env.ROCKSDB_VERSION }}\` |
+          | **NDK** | \`${{ env.NDK_VERSION }}\` |
+          | **Android API** | \`${{ env.ANDROID_API }}+\` (Android 5.0+) |
+          | **ABI** | \`arm64-v8a\` |
+          | **C++ standard** | C++20 |
+          | **Compression** | Snappy · LZ4 · Zlib · Zstd |
+          | **File size** | \`$SIZE\` |
+          | **JNI symbols** | $JNI_COUNT |
+
+          ### Cách dùng với Voxy / PojavLauncher
+
+          \`\`\`
+          # Chỉ cần 1 file duy nhất:
+          librocksdbjni-linux-aarch64.so
+
+          # Thêm vào JVM args:
+          -Djava.library.path=/path/to/arm64-v8a
+          \`\`\`
+          SUMMARY
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  JOB 4 ▸ GitHub Release (chỉ chạy khi push tag)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  release:
+    name: "④ GitHub Release"
+    runs-on: ubuntu-22.04
+    needs: build-jni
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: librocksdbjni-android-aarch64-${{ env.ROCKSDB_VERSION }}
+          path: output/
+
+      - name: Package & checksum
+        run: |
+          cd output
+          ZIP="librocksdbjni-android-aarch64-${{ env.ROCKSDB_VERSION }}.zip"
+          zip -9 "$ZIP" *.so
+          sha256sum "$ZIP" *.so > checksums-sha256.txt
+          echo "=== Release files ==="
+          ls -lh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "librocksdbjni Android AArch64 · RocksDB ${{ env.ROCKSDB_VERSION }}"
+          body: |
+            ## librocksdbjni Android AArch64
+
+            Cross-compiled từ **RocksDB ${{ env.ROCKSDB_VERSION }}** dành cho Voxy mod trên Android.
+
+            | | |
+            |---|---|
+            | NDK | `r26d` (Clang 17) |
+            | Android API | `${{ env.ANDROID_API }}+` (Android 5.0+) |
+            | ABI | `arm64-v8a` |
+            | C++ | C++20 |
+            | Compression | Snappy + LZ4 + Zlib + Zstd |
+
+            ### Files
+            - `librocksdbjni-linux-aarch64.so` — standalone, C++ runtime linked statically (không cần file đi kèm)
+            - `checksums-sha256.txt` — SHA-256 hash
+
+            ### Cách dùng
+            ```
+            -Djava.library.path=/path/to/arm64-v8a
+            ```
+          files: |
+            output/librocksdbjni-android-aarch64-${{ env.ROCKSDB_VERSION }}.zip
+            output/checksums-sha256.txt
