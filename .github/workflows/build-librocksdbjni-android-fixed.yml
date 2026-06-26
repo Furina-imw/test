@@ -361,7 +361,7 @@ jobs:
             -I${JAVA_HOME}/include \
             -I${JAVA_HOME}/include/linux"
 
-          COMPILE_FLAGS="-fPIC -O2 -std=c++17 -frtti -fexceptions -DNDEBUG \
+          COMPILE_FLAGS="-fPIC -O2 -std=c++17 -fno-rtti -fexceptions -DNDEBUG \
             -DOS_ANDROID -DROCKSDB_PLATFORM_POSIX -DROCKSDB_LIB_IO_POSIX"
 
           # Test-only files: no JNI headers generated for them, skip safely
