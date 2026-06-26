@@ -102,13 +102,22 @@ jobs:
       - name: Build liblwjgl_zstd.so
         run: |
           ZSTD_DIR="${{ github.workspace }}/modules/lwjgl/zstd/src"
+          # zstd's own xxhash.h include is satisfied by LWJGL's separate xxhash module,
+          # not by anything inside the zstd module itself.
+          XXHASH_DIR="${{ github.workspace }}/modules/lwjgl/xxhash/src/main/c"
+          # common_tools.h (getEnv/JNI_OnLoad helpers used by every generated JNI wrapper)
+          # lives in the core module, not in zstd.
+          CORE_DIR="${{ github.workspace }}/modules/lwjgl/core/src/main/c"
 
-          # Collect all C sources (JNI wrappers + bundled zstd)
+          # Collect all C sources: JNI wrappers + bundled zstd + xxhash + core JNI helper
           ALL_C=$(find "${ZSTD_DIR}" -name "*.c" | tr '\n' ' ')
+          ALL_C="${ALL_C} ${XXHASH_DIR}/xxhash.c ${CORE_DIR}/common_tools.c"
           echo "Sources: $(echo ${ALL_C} | wc -w) files"
 
-          # Include: bundled zstd headers + JDK JNI headers
+          # Include: bundled zstd headers + xxhash headers + core JNI headers + JDK JNI headers
           INC="-I${ZSTD_DIR}/main/c \
+               -I${XXHASH_DIR} \
+               -I${CORE_DIR} \
                -I${JAVA_HOME}/include \
                -I${JAVA_HOME}/include/linux"
 
