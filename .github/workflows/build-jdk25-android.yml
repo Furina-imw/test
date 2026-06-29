@@ -131,16 +131,15 @@ jobs:
           ln -sf $TOOLCHAIN/bin/llvm-nm    $HOME/ndk-tools/nm
           export PATH="$HOME/ndk-tools:$PATH"
 
-          # Bypass X11 header checks — configure dùng cross-compiler nên không thấy host headers
-          # Khai báo trước để autoconf skip kiểm tra thực tế
+          # Bypass X11 header checks — thêm /usr/include vào search path của cross-compiler
           export ac_cv_have_x="have_x=yes ac_x_includes=/usr/include ac_x_libraries=/usr/lib/x86_64-linux-gnu"
 
           bash configure \
             --openjdk-target=aarch64-linux-android \
             --with-toolchain-type=clang \
             --with-sysroot=$SYSROOT \
-            --with-extra-cflags="-I${ANDROID_SYSROOT}/include -fPIC -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }}" \
-            --with-extra-cxxflags="-I${ANDROID_SYSROOT}/include -fPIC -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }}" \
+            --with-extra-cflags="-I${ANDROID_SYSROOT}/include -I/usr/include -fPIC -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }}" \
+            --with-extra-cxxflags="-I${ANDROID_SYSROOT}/include -I/usr/include -fPIC -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }}" \
             --with-extra-ldflags="-L${ANDROID_SYSROOT}/lib -L${SYSROOT}/usr/lib/aarch64-linux-android/${{ env.ANDROID_API }}" \
             \
             --with-freetype=system \
