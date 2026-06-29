@@ -116,7 +116,18 @@ jobs:
           make -j$(nproc)
           make install
 
-      # ─── 5. Configure OpenJDK ───────────────────────────────────────────────
+      # ─── 5. Patch OpenJDK source cho Android ────────────────────────────────
+      - name: Patch OpenJDK source for Android NDK compatibility
+        working-directory: jdk-src
+        run: |
+          # elfFile.hpp: Android NDK không có ELF64_ST_TYPE, chỉ có ELF_ST_TYPE(x) = ((x)&0xf)
+          # Thêm define ELF64_ST_TYPE nếu chưa có
+          sed -i 's|#define ELF_ST_TYPE ELF64_ST_TYPE|#ifndef ELF64_ST_TYPE\n#define ELF64_ST_TYPE(x) ((x)\&0xf)\n#endif\n#define ELF_ST_TYPE ELF64_ST_TYPE|' \
+            src/hotspot/share/utilities/elfFile.hpp
+          echo "Patch applied:"
+          grep -A3 "ELF64_ST_TYPE" src/hotspot/share/utilities/elfFile.hpp | head -10
+
+      # ─── 6. Configure OpenJDK ───────────────────────────────────────────────
       - name: Configure OpenJDK (cross-compile for Android aarch64)
         working-directory: jdk-src
         run: |
