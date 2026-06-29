@@ -121,14 +121,18 @@ jobs:
         working-directory: jdk-src
         run: |
           ELF_HPP="src/hotspot/share/utilities/elfFile.hpp"
-          # elfFile.hpp define ELF_ST_TYPE = ELF64_ST_TYPE (object macro)
-          # Nhưng NDK đã define ELF_ST_TYPE(x) là function-like macro
-          # → phải undef ELF_ST_TYPE của NDK và redefine là function-like macro
-          # Thay thế dòng: #define ELF_ST_TYPE ELF64_ST_TYPE
-          # Bằng:          #undef ELF_ST_TYPE
-          #                #define ELF_ST_TYPE(x) ELF64_ST_TYPE(x)
+          # NDK's <linux/elf.h> đã tự định nghĩa ELF_ST_TYPE(val) như một
+          # function-like macro làm việc bit-shift thật, còn ELF32_ST_TYPE/
+          # ELF64_ST_TYPE chỉ forward sang nó (#define ELF64_ST_TYPE(x) ELF_ST_TYPE(x)).
+          # Dòng gốc của OpenJDK "#define ELF_ST_TYPE ELF64_ST_TYPE" sẽ đè lên
+          # macro ELF_ST_TYPE đã tồn tại của NDK, tạo tham chiếu vòng:
+          #   ELF_ST_TYPE(x) -> ELF64_ST_TYPE(x) -> ELF_ST_TYPE(x) (bị preprocessor chặn)
+          # → compiler báo "use of undeclared identifier 'ELF_ST_TYPE'".
+          # Cách sửa đúng: chỉ define ELF_ST_TYPE khi nó CHƯA được định nghĩa.
+          # - Trên glibc: chưa có ELF_ST_TYPE sẵn -> giữ hành vi gốc của OpenJDK.
+          # - Trên Android NDK: đã có sẵn macro đúng -> giữ nguyên, không đè lên.
           if grep -q "define ELF_ST_TYPE ELF64_ST_TYPE" "$ELF_HPP"; then
-            sed -i 's/#define ELF_ST_TYPE ELF64_ST_TYPE/#undef ELF_ST_TYPE\n#define ELF_ST_TYPE(x) ELF64_ST_TYPE(x)/' "$ELF_HPP"
+            sed -i 's/#define ELF_ST_TYPE ELF64_ST_TYPE/#ifndef ELF_ST_TYPE\n#define ELF_ST_TYPE ELF64_ST_TYPE\n#endif/' "$ELF_HPP"
             echo "Patch applied OK"
             grep -n "ELF_ST_TYPE\|ELF64" "$ELF_HPP" | head -15
           else
