@@ -12,15 +12,17 @@ jobs:
       ANDROID_API: 35
       NDK_VERSION: "27.2.12479018"
       JDK_VERSION: "25"
-      OPENJDK_TAG: "jdk-25+37"   # thay bằng tag mới nhất từ github.com/openjdk/jdk
+      # Repo: openjdk/jdk25u — tag GA mới nhất: jdk-25.0.3-ga (21/4/2026)
+      # JDK 25.0.4 GA dự kiến 21/7/2026, khi đó đổi thành: jdk-25.0.4-ga
+      OPENJDK_REF: "jdk-25.0.3-ga"
 
     steps:
       # ─── 1. Checkout ────────────────────────────────────────────────────────
       - name: Checkout OpenJDK source
         uses: actions/checkout@v4
         with:
-          repository: openjdk/jdk
-          ref: ${{ env.OPENJDK_TAG }}
+          repository: openjdk/jdk25u
+          ref: ${{ env.OPENJDK_REF }}
           path: jdk-src
           fetch-depth: 1
 
@@ -159,10 +161,10 @@ jobs:
             jdk-src/config.log
 
       # ─── 6. Build ───────────────────────────────────────────────────────────
-      - name: Build images
+      - name: Build JRE
         working-directory: jdk-src
         run: |
-          make images JOBS=$(nproc) 2>&1 | tee build.log
+          make jre JOBS=$(nproc) 2>&1 | tee build.log
 
       - name: Upload build log (nếu thất bại)
         if: failure()
@@ -181,18 +183,18 @@ jobs:
 
       - name: Strip binaries
         run: |
-          find $BUILD_DIR/images/jdk -name "*.so" | xargs $STRIP --strip-unneeded || true
-          find $BUILD_DIR/images/jdk/bin -type f | xargs $STRIP --strip-all || true
+          find $BUILD_DIR/images/jre -name "*.so" | xargs $STRIP --strip-unneeded || true
+          find $BUILD_DIR/images/jre/bin -type f | xargs $STRIP --strip-all || true
 
       - name: Verify ZGC present
         run: |
           echo "=== Checking for ZGC ==="
-          find $BUILD_DIR/images/jdk -name "*.so" | xargs grep -l "ZGC" 2>/dev/null || echo "ZGC may be compiled into libjvm.so statically"
-          strings $BUILD_DIR/images/jdk/lib/server/libjvm.so | grep -i "zgc" | head -10 || true
+          find $BUILD_DIR/images/jre -name "*.so" | xargs grep -l "ZGC" 2>/dev/null || echo "ZGC may be compiled into libjvm.so statically"
+          strings $BUILD_DIR/images/jre/lib/server/libjvm.so | grep -i "zgc" | head -10 || true
 
       - name: Package universal (conf + lib jars)
         run: |
-          cd $BUILD_DIR/images/jdk
+          cd $BUILD_DIR/images/jre
           tar -cJf $GITHUB_WORKSPACE/universal.tar.xz \
             conf/ \
             legal/ \
@@ -212,7 +214,7 @@ jobs:
 
       - name: Package bin-arm64 (binaries + native libs)
         run: |
-          cd $BUILD_DIR/images/jdk
+          cd $BUILD_DIR/images/jre
           tar -cJf $GITHUB_WORKSPACE/bin-arm64.tar.xz \
             bin/ \
             lib/server/ \
@@ -228,7 +230,7 @@ jobs:
       - name: Upload JDK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openjdk25-android-aarch64-full
+          name: openjdk25-android-aarch64-jre
           path: |
             ${{ github.workspace }}/universal.tar.xz
             ${{ github.workspace }}/bin-arm64.tar.xz
