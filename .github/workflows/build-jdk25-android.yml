@@ -36,7 +36,14 @@ jobs:
             libxrandr-dev libxtst-dev libxt-dev \
             libcups2-dev libfontconfig1-dev libasound2-dev \
             libfreetype-dev libpng-dev zlib1g-dev \
-            ninja-build
+            clang lld ninja-build
+          # Trỏ /usr/bin/cc và /usr/bin/c++ sang clang
+          # OpenJDK configure kiểm tra 'cc' cho host build compiler
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/clang 100
+          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++ 100
+          sudo update-alternatives --set cc /usr/bin/clang
+          sudo update-alternatives --set c++ /usr/bin/clang++
+          cc --version
 
       - name: Install Boot JDK 24 (bắt buộc để build JDK 25)
         run: |
@@ -158,6 +165,8 @@ jobs:
             --x-includes=/usr/include \
             --x-libraries=/usr/lib \
             \
+            BUILD_CC=/usr/bin/clang \
+            BUILD_CXX=/usr/bin/clang++ \
             CC=$TOOLCHAIN/bin/aarch64-linux-android${{ env.ANDROID_API }}-clang \
             CXX=$TOOLCHAIN/bin/aarch64-linux-android${{ env.ANDROID_API }}-clang++ \
             2>&1 | tee configure.log
