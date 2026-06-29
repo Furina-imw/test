@@ -36,7 +36,18 @@ jobs:
             libxrandr-dev libxtst-dev libxt-dev \
             libcups2-dev libfontconfig1-dev libasound2-dev \
             libfreetype-dev libpng-dev zlib1g-dev \
-            openjdk-21-jdk ninja-build
+            ninja-build
+
+      - name: Install Boot JDK 24 (bắt buộc để build JDK 25)
+        run: |
+          # JDK 25 yêu cầu boot JDK N-1 = JDK 24
+          # Ubuntu apt chỉ có JDK 21, phải tải JDK 24 từ Adoptium
+          curl -fsSL "https://api.adoptium.net/v3/binary/latest/24/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" \
+            -o /tmp/jdk24.tar.gz
+          sudo mkdir -p /opt/jdk24
+          sudo tar -xzf /tmp/jdk24.tar.gz -C /opt/jdk24 --strip-components=1
+          echo "BOOT_JDK=/opt/jdk24" >> $GITHUB_ENV
+          /opt/jdk24/bin/java -version
 
       # ─── 3. Android NDK ─────────────────────────────────────────────────────
       - name: Setup Android NDK
@@ -142,7 +153,7 @@ jobs:
             --with-debug-level=release \
             --with-native-debug-symbols=none \
             \
-            --with-boot-jdk=/usr/lib/jvm/java-21-openjdk-amd64 \
+            --with-boot-jdk=$BOOT_JDK \
             \
             --x-includes=/usr/include \
             --x-libraries=/usr/lib \
