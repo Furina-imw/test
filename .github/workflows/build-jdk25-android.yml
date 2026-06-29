@@ -86,7 +86,7 @@ jobs:
             --host=aarch64-linux-android \
             --prefix=$HOME/android-sysroot \
             CC=$CC CXX=$CXX AR=$AR \
-            --enable-static --disable-shared \
+            --enable-static --enable-shared \
             --without-bzip2 --without-png --without-harfbuzz --without-brotli
           make -j$(nproc)
           make install
