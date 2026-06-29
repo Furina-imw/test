@@ -138,6 +138,11 @@ jobs:
             --with-libpng=bundled \
             --with-zlib=bundled \
             \
+            --enable-headless-only \
+            \
+            --with-ar=$TOOLCHAIN/bin/llvm-ar \
+            --with-strip=$TOOLCHAIN/bin/llvm-strip \
+            \
             --with-jvm-variants=server \
             --with-jvm-features="\
               compiler1,\
