@@ -209,7 +209,7 @@ jobs:
       - name: Build JRE
         working-directory: jdk-src
         run: |
-          make jre-image JOBS=$(nproc) 2>&1 | tee build.log
+          make images JOBS=$(nproc) 2>&1 | tee build.log
 
       - name: Upload build log (nếu thất bại)
         if: failure()
@@ -228,18 +228,18 @@ jobs:
 
       - name: Strip binaries
         run: |
-          find $BUILD_DIR/images/jre -name "*.so" | xargs $STRIP --strip-unneeded || true
-          find $BUILD_DIR/images/jre/bin -type f | xargs $STRIP --strip-all || true
+          find $BUILD_DIR/images/jdk -name "*.so" | xargs $STRIP --strip-unneeded || true
+          find $BUILD_DIR/images/jdk/bin -type f | xargs $STRIP --strip-all || true
 
       - name: Verify ZGC present
         run: |
           echo "=== Checking for ZGC ==="
-          find $BUILD_DIR/images/jre -name "*.so" | xargs grep -l "ZGC" 2>/dev/null || echo "ZGC may be compiled into libjvm.so statically"
-          strings $BUILD_DIR/images/jre/lib/server/libjvm.so | grep -i "zgc" | head -10 || true
+          find $BUILD_DIR/images/jdk -name "*.so" | xargs grep -l "ZGC" 2>/dev/null || echo "ZGC may be compiled into libjvm.so statically"
+          strings $BUILD_DIR/images/jdk/lib/server/libjvm.so | grep -i "zgc" | head -10 || true
 
       - name: Package universal (conf + lib jars)
         run: |
-          cd $BUILD_DIR/images/jre
+          cd $BUILD_DIR/images/jdk
           tar -cJf $GITHUB_WORKSPACE/universal.tar.xz \
             conf/ \
             legal/ \
@@ -259,7 +259,7 @@ jobs:
 
       - name: Package bin-arm64 (binaries + native libs)
         run: |
-          cd $BUILD_DIR/images/jre
+          cd $BUILD_DIR/images/jdk
           tar -cJf $GITHUB_WORKSPACE/bin-arm64.tar.xz \
             bin/ \
             lib/server/ \
