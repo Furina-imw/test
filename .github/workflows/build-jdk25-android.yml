@@ -131,15 +131,22 @@ jobs:
           ln -sf $TOOLCHAIN/bin/llvm-nm    $HOME/ndk-tools/nm
           export PATH="$HOME/ndk-tools:$PATH"
 
-          # Bypass X11 header checks — thêm /usr/include vào search path của cross-compiler
-          export ac_cv_have_x="have_x=yes ac_x_includes=/usr/include ac_x_libraries=/usr/lib/x86_64-linux-gnu"
+          # X11 headers: symlink vào android-sysroot để cross-compiler tìm thấy
+          # (không dùng -I/usr/include vì sẽ làm lẫn NDK headers với host headers)
+          mkdir -p ${ANDROID_SYSROOT}/include/X11/extensions
+          for src in /usr/include/X11/*.h; do
+            ln -sf "$src" "${ANDROID_SYSROOT}/include/X11/$(basename $src)" 2>/dev/null || true
+          done
+          for src in /usr/include/X11/extensions/*.h; do
+            ln -sf "$src" "${ANDROID_SYSROOT}/include/X11/extensions/$(basename $src)" 2>/dev/null || true
+          done
 
           bash configure \
             --openjdk-target=aarch64-linux-android \
             --with-toolchain-type=clang \
             --with-sysroot=$SYSROOT \
-            --with-extra-cflags="-I${ANDROID_SYSROOT}/include -I/usr/include -fPIC -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }}" \
-            --with-extra-cxxflags="-I${ANDROID_SYSROOT}/include -I/usr/include -fPIC -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }}" \
+            --with-extra-cflags="-I${ANDROID_SYSROOT}/include -fPIC -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }}" \
+            --with-extra-cxxflags="-I${ANDROID_SYSROOT}/include -fPIC -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }}" \
             --with-extra-ldflags="-L${ANDROID_SYSROOT}/lib -L${SYSROOT}/usr/lib/aarch64-linux-android/${{ env.ANDROID_API }}" \
             \
             --with-freetype=system \
@@ -180,8 +187,8 @@ jobs:
             \
             --with-boot-jdk=$BOOT_JDK \
             \
-            --x-includes=/usr/include \
-            --x-libraries=/usr/lib \
+            --x-includes=${ANDROID_SYSROOT}/include \
+            --x-libraries=/usr/lib/x86_64-linux-gnu \
             \
             BUILD_CC=/usr/bin/clang \
             BUILD_CXX=/usr/bin/clang++ \
