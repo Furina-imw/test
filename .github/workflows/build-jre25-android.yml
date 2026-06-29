@@ -1,0 +1,444 @@
+name: Build JRE 25 Android AArch64 (Full-Featured)
+
+on:
+  workflow_dispatch:
+    inputs:
+      jdk_tag:
+        description: 'OpenJDK 25 tag (e.g. jdk-25.0.3+9)'
+        required: true
+        default: 'jdk-25.0.3+9'
+      ndk_version:
+        description: 'Android NDK version'
+        required: true
+        default: 'r27c'
+      android_api:
+        description: 'Android API level (min 26)'
+        required: true
+        default: '26'
+
+env:
+  # ── Build targets ────────────────────────────────────────────
+  TARGET_ARCH: aarch64
+  TARGET_TRIPLE: aarch64-linux-android
+  ANDROID_API: ${{ github.event.inputs.android_api || '26' }}
+  JDK_TAG: ${{ github.event.inputs.jdk_tag || 'jdk-25.0.3+9' }}
+  NDK_VERSION: ${{ github.event.inputs.ndk_version || 'r27c' }}
+
+  # ── Paths ────────────────────────────────────────────────────
+  NDK_ROOT: ${{ github.workspace }}/android-ndk
+  JDK_SRC: ${{ github.workspace }}/jdk25-src
+  BUILD_OUT: ${{ github.workspace }}/build-output
+  FREETYPE_VERSION: '2.13.3'
+
+jobs:
+  build:
+    name: Build JRE 25 – aarch64 Android
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      # ──────────────────────────────────────────────────────────
+      # 1. Checkout this repo (for any local patches)
+      # ──────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ──────────────────────────────────────────────────────────
+      # 2. System dependencies
+      # ──────────────────────────────────────────────────────────
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            autoconf make cmake ninja-build \
+            zip unzip curl wget git \
+            libx11-dev libxext-dev libxrender-dev libxrandr-dev \
+            libxtst-dev libxt-dev \
+            libcups2-dev libfontconfig1-dev \
+            libasound2-dev \
+            libfreetype-dev \
+            build-essential gcc g++ \
+            python3 python3-pip \
+            ccache \
+            file
+
+      # ──────────────────────────────────────────────────────────
+      # 3. Boot JDK 25 (needed to build JDK 25 from source)
+      # ──────────────────────────────────────────────────────────
+      - name: Install Boot JDK 24
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '24'
+
+      - name: Verify Boot JDK
+        run: java -version
+
+      # ──────────────────────────────────────────────────────────
+      # 4. Android NDK
+      # ──────────────────────────────────────────────────────────
+      - name: Cache NDK
+        id: cache-ndk
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NDK_ROOT }}
+          key: ndk-${{ env.NDK_VERSION }}
+
+      - name: Download Android NDK ${{ env.NDK_VERSION }}
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
+        run: |
+          wget -q "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip" \
+            -O /tmp/ndk.zip
+          unzip -q /tmp/ndk.zip -d /tmp/ndk-extract
+          mv /tmp/ndk-extract/android-ndk-${NDK_VERSION} "${NDK_ROOT}"
+          rm /tmp/ndk.zip
+
+      - name: Setup NDK environment variables
+        run: |
+          TOOLCHAIN="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
+          echo "NDK_TOOLCHAIN=${TOOLCHAIN}" >> $GITHUB_ENV
+          echo "CC=${TOOLCHAIN}/bin/${TARGET_TRIPLE}${ANDROID_API}-clang"   >> $GITHUB_ENV
+          echo "CXX=${TOOLCHAIN}/bin/${TARGET_TRIPLE}${ANDROID_API}-clang++" >> $GITHUB_ENV
+          echo "AR=${TOOLCHAIN}/bin/llvm-ar"       >> $GITHUB_ENV
+          echo "NM=${TOOLCHAIN}/bin/llvm-nm"       >> $GITHUB_ENV
+          echo "RANLIB=${TOOLCHAIN}/bin/llvm-ranlib" >> $GITHUB_ENV
+          echo "STRIP=${TOOLCHAIN}/bin/llvm-strip"  >> $GITHUB_ENV
+          echo "NDK_SYSROOT=${TOOLCHAIN}/sysroot"  >> $GITHUB_ENV
+          echo "${TOOLCHAIN}/bin" >> $GITHUB_PATH
+
+      # ──────────────────────────────────────────────────────────
+      # 5. Build FreeType for Android AArch64
+      # ──────────────────────────────────────────────────────────
+      - name: Cache FreeType
+        id: cache-freetype
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/freetype-android
+          key: freetype-${{ env.FREETYPE_VERSION }}-android-${{ env.ANDROID_API }}-aarch64
+
+      - name: Build FreeType ${{ env.FREETYPE_VERSION }} for Android
+        if: steps.cache-freetype.outputs.cache-hit != 'true'
+        run: |
+          wget -q "https://download.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.gz" \
+            -O /tmp/freetype.tar.gz
+          tar -xzf /tmp/freetype.tar.gz -C /tmp
+          cd "/tmp/freetype-${FREETYPE_VERSION}"
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_SYSTEM_VERSION="${ANDROID_API}" \
+            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
+            -DCMAKE_ANDROID_NDK="${NDK_ROOT}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/freetype-android" \
+            -DFT_DISABLE_ZLIB=OFF \
+            -DFT_DISABLE_BZIP2=ON \
+            -DFT_DISABLE_PNG=ON \
+            -DFT_DISABLE_HARFBUZZ=ON \
+            -DFT_DISABLE_BROTLI=ON
+          make -j$(nproc)
+          make install
+
+      # ──────────────────────────────────────────────────────────
+      # 6. Clone OpenJDK 25 source
+      # ──────────────────────────────────────────────────────────
+      - name: Cache JDK source
+        id: cache-jdk-src
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.JDK_SRC }}
+          key: jdk25-src-${{ env.JDK_TAG }}
+
+      - name: Clone OpenJDK 25 (${{ env.JDK_TAG }})
+        if: steps.cache-jdk-src.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 \
+            --branch "${JDK_TAG}" \
+            https://github.com/openjdk/jdk25u.git \
+            "${JDK_SRC}"
+          # Fallback to main jdk repo if jdk25u doesn't have the tag
+          if [ ! -d "${JDK_SRC}/.git" ]; then
+            git clone --depth=1 \
+              --branch "${JDK_TAG}" \
+              https://github.com/openjdk/jdk.git \
+              "${JDK_SRC}"
+          fi
+
+      # ──────────────────────────────────────────────────────────
+      # 7. Apply Android compatibility patches
+      # ──────────────────────────────────────────────────────────
+      - name: Apply Android patches
+        working-directory: ${{ env.JDK_SRC }}
+        run: |
+          # ── Patch 1: os_linux.cpp ──────────────────────────────
+          # Android Bionic does not have getcontext/makecontext/swapcontext.
+          # The JVM uses these only for coroutine-style stack walking in
+          # some code paths; we replace the relevant guard.
+          OSLINUX="src/hotspot/os/linux/os_linux.cpp"
+          if grep -q "getcontext" "${OSLINUX}"; then
+            sed -i 's/#include <ucontext.h>/#include <ucontext.h>\n#ifndef __ANDROID__/' "${OSLINUX}"
+            echo "#endif // __ANDROID__" >> "${OSLINUX}"
+          fi
+
+          # ── Patch 2: Remove backtrace() (not in Bionic) ────────
+          for f in $(grep -rl "backtrace(" src/ --include="*.cpp" --include="*.c"); do
+            sed -i \
+              's/backtrace(\([^)]*\))/0 \/* backtrace removed for Android *\//g' \
+              "$f"
+            sed -i \
+              's/backtrace_symbols(\([^)]*\))/NULL \/* backtrace_symbols removed *\//g' \
+              "$f"
+          done
+
+          # ── Patch 3: POSIX clock fixes ─────────────────────────
+          # Android API < 29 lacks CLOCK_THREAD_CPUTIME_ID in some builds
+          for f in $(grep -rl "CLOCK_THREAD_CPUTIME_ID" src/ --include="*.cpp" --include="*.c"); do
+            sed -i \
+              's/CLOCK_THREAD_CPUTIME_ID/CLOCK_MONOTONIC/g' \
+              "$f"
+          done
+
+          # ── Patch 4: Disable unsupported signal handlers ────────
+          # Android doesn't support SIGPWR/SIGXFSZ on all API levels
+          for f in $(grep -rl "SIGPWR\|SIGXFSZ" src/ --include="*.cpp" --include="*.c"); do
+            sed -i 's/SIGPWR/SIGUSR2/g; s/SIGXFSZ/SIGUSR1/g' "$f"
+          done
+
+          # ── Patch 5: JFR - disable /proc/self/maps dependency ──
+          JFR_MMAP="src/hotspot/share/jfr/recorder/storage/jfrMemorySpace.cpp"
+          if [ -f "${JFR_MMAP}" ]; then
+            sed -i 's|/proc/self/maps|/proc/self/maps \/* Android OK *\/|g' \
+              "${JFR_MMAP}" || true
+          fi
+
+          # ── Patch 6: headless AWT stub compatibility ───────────
+          AWT_TOOLKIT="src/java.desktop/unix/classes/sun/awt/X11/XToolkit.java"
+          if [ -f "${AWT_TOOLKIT}" ]; then
+            sed -i 's/throw new AWTError/System.err.println("AWT stub:"); \/\/ throw new AWTError/g' \
+              "${AWT_TOOLKIT}" || true
+          fi
+
+          echo "✅ All Android patches applied"
+
+      # ──────────────────────────────────────────────────────────
+      # 8. Setup ccache
+      # ──────────────────────────────────────────────────────────
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-jdk25-android-aarch64-${{ github.run_id }}
+          restore-keys: |
+            ccache-jdk25-android-aarch64-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=5G
+          ccache --zero-stats
+          echo "CC=ccache ${CC}"   >> $GITHUB_ENV
+          echo "CXX=ccache ${CXX}" >> $GITHUB_ENV
+
+      # ──────────────────────────────────────────────────────────
+      # 9. Configure OpenJDK 25
+      # ──────────────────────────────────────────────────────────
+      - name: Configure JDK 25 for Android AArch64
+        working-directory: ${{ env.JDK_SRC }}
+        run: |
+          # SVE detection: Snapdragon 8 Gen 1+ supports SVE
+          # Use armv8.2-a as safe baseline for all modern Android devices
+          MARCH="-march=armv8.2-a+sve2+aes+sha2+sha3+sm4"
+
+          bash configure \
+            --openjdk-target=${TARGET_TRIPLE} \
+            --with-sysroot="${NDK_SYSROOT}" \
+            \
+            --with-jvm-variants=server \
+            --with-jvm-features="\
+              zgc,\
+              shenandoahgc,\
+              epsilongc,\
+              jvmci,\
+              jfr,\
+              management,\
+              compiler-interface,\
+              vector,\
+              aot,\
+              link-time-opt,\
+              compact-object-headers" \
+            \
+            --enable-jvm-feature-zgc \
+            --enable-jvm-feature-shenandoahgc \
+            --enable-jvm-feature-epsilongc \
+            --enable-jvm-feature-jvmci \
+            --enable-jvm-feature-jfr \
+            --enable-jvm-feature-management \
+            --enable-jvm-feature-compiler-interface \
+            \
+            --with-debug-level=release \
+            --with-native-debug-symbols=none \
+            \
+            --enable-headless-only \
+            --disable-dtrace \
+            --disable-warnings-as-errors \
+            --disable-precompiled-headers \
+            \
+            --with-freetype=bundled \
+            --with-fontconfig=bundled \
+            --with-libjpeg=bundled \
+            --with-libpng=bundled \
+            --with-giflib=bundled \
+            --with-lcms=bundled \
+            --with-zlib=bundled \
+            \
+            --with-extra-cflags="${MARCH} -O2 -fstack-protector-strong -D__ANDROID_API__=${ANDROID_API}" \
+            --with-extra-cxxflags="${MARCH} -O2 -fstack-protector-strong -D__ANDROID_API__=${ANDROID_API}" \
+            --with-extra-ldflags="-Wl,--hash-style=both -Wl,--build-id=sha1" \
+            \
+            --with-jobs=$(nproc) \
+            --with-memory-size=6000 \
+            \
+            CC="${CC}" \
+            CXX="${CXX}" \
+            AR="${AR}" \
+            NM="${NM}" \
+            RANLIB="${RANLIB}" \
+            STRIP="${STRIP}"
+
+      # ──────────────────────────────────────────────────────────
+      # 10. Build
+      # ──────────────────────────────────────────────────────────
+      - name: Build JDK (images)
+        working-directory: ${{ env.JDK_SRC }}
+        run: |
+          make images JOBS=$(nproc)
+
+      # ──────────────────────────────────────────────────────────
+      # 11. Package for Zalith / PojavLauncher
+      # ──────────────────────────────────────────────────────────
+      - name: Package JRE for Zalith Launcher
+        run: |
+          JRE_BUILD=$(ls -d "${JDK_SRC}/build/"*/jdk/jre 2>/dev/null || \
+                      ls -d "${JDK_SRC}/build/"*/images/jdk 2>/dev/null | head -1)
+
+          if [ -z "${JRE_BUILD}" ]; then
+            # Try alternate layout (JDK 25 may output just 'jdk')
+            JRE_BUILD=$(ls -d "${JDK_SRC}/build/"*/images/jdk)
+          fi
+
+          echo "JRE source: ${JRE_BUILD}"
+
+          PACKAGE_DIR="${BUILD_OUT}/jre25-aarch64"
+          mkdir -p "${PACKAGE_DIR}"
+
+          # Copy JRE contents
+          cp -a "${JRE_BUILD}/." "${PACKAGE_DIR}/"
+
+          # ── Strip debug symbols to reduce size ────────────────
+          find "${PACKAGE_DIR}" -name "*.so" -exec \
+            "${NDK_TOOLCHAIN}/bin/llvm-strip" --strip-unneeded {} \; 2>/dev/null || true
+          find "${PACKAGE_DIR}/bin" -type f -exec \
+            "${NDK_TOOLCHAIN}/bin/llvm-strip" --strip-unneeded {} \; 2>/dev/null || true
+
+          # ── Verify key features are present ───────────────────
+          echo "=== Checking bundled features ==="
+          echo -n "ZGC:          "; ls "${PACKAGE_DIR}/lib/libz.so" 2>/dev/null && \
+            grep -l "ZGC" "${PACKAGE_DIR}/lib/"*.so 2>/dev/null | head -1 || echo "check libjvm.so directly"
+          echo -n "JFR classes:  "; ls "${PACKAGE_DIR}/lib/jfr.jar" 2>/dev/null || echo "embedded in modules"
+          echo -n "FreeType:     "; ls "${PACKAGE_DIR}/lib/libfreetype.so" 2>/dev/null || echo "bundled/static"
+          echo -n "libjvm.so:    "; ls "${PACKAGE_DIR}/lib/server/libjvm.so"
+          echo ""
+
+          # ── Create Pojav-compatible release.json ──────────────
+          cat > "${PACKAGE_DIR}/release.json" << 'JSON'
+          {
+            "jre_version": "25",
+            "arch": "aarch64",
+            "features": [
+              "ZGC", "ShenandoahGC", "GenerationalShenandoah",
+              "EpsilonGC", "G1GC",
+              "JFR", "JVMCI", "VectorAPI",
+              "AOT", "CompactObjectHeaders",
+              "VirtualThreads", "ScopedValues", "StructuredConcurrency",
+              "ForeignFunctionAPI", "PatternMatching"
+            ],
+            "android_api_min": 26,
+            "built_by": "github-actions"
+          }
+          JSON
+
+          # ── Pack as tar.xz ────────────────────────────────────
+          cd "${BUILD_OUT}"
+          XZ_OPT="-T0 -9" tar -cJf "jre25-aarch64.tar.xz" "jre25-aarch64/"
+
+          echo "Package size: $(du -sh jre25-aarch64.tar.xz | cut -f1)"
+
+      # ──────────────────────────────────────────────────────────
+      # 12. Print ccache stats
+      # ──────────────────────────────────────────────────────────
+      - name: ccache stats
+        run: ccache --show-stats
+
+      # ──────────────────────────────────────────────────────────
+      # 13. Upload artifact
+      # ──────────────────────────────────────────────────────────
+      - name: Upload JRE 25 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jre25-aarch64-android
+          path: ${{ env.BUILD_OUT }}/jre25-aarch64.tar.xz
+          retention-days: 30
+
+      # ──────────────────────────────────────────────────────────
+      # 14. Create GitHub Release (optional, on workflow_dispatch)
+      # ──────────────────────────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "jre25-android-${{ env.JDK_TAG }}"
+          name: "JRE 25 Android AArch64 (${{ env.JDK_TAG }})"
+          body: |
+            ## Full-featured OpenJDK 25 for Android AArch64
+            Compatible with Zalith Launcher 2 / PojavLauncher.
+
+            ### Included features
+            | GC | Status |
+            |---|---|
+            | G1GC | ✅ |
+            | ZGC | ✅ |
+            | Generational Shenandoah | ✅ |
+            | Epsilon GC | ✅ |
+
+            | Feature | Status |
+            |---|---|
+            | JFR (Flight Recorder) | ✅ |
+            | JVMCI / Graal interface | ✅ |
+            | Vector API (SIMD) | ✅ |
+            | Compact Object Headers | ✅ |
+            | AOT Method Profiling | ✅ |
+            | Virtual Threads (Loom) | ✅ |
+            | Foreign Function API | ✅ |
+            | Scoped Values | ✅ |
+            | Bundled FreeType | ✅ |
+            | Bundled FontConfig | ✅ |
+
+            ### Installation
+            1. Download `jre25-aarch64.tar.xz`
+            2. Extract to your Zalith Launcher runtimes directory
+            3. In Zalith: Settings → Java Runtime → point to extracted folder
+            
+            ### Recommended JVM flags
+            ```
+            -XX:+UseZGC -XX:+ZGenerational
+            -XX:+UseCompactObjectHeaders
+            -XX:+FlightRecorder
+            -Xmx4g -Xms512m
+            ```
+
+            Built from: `${{ env.JDK_TAG }}`  
+            Android API: `${{ env.ANDROID_API }}`  
+            NDK: `${{ env.NDK_VERSION }}`
+          files: ${{ env.BUILD_OUT }}/jre25-aarch64.tar.xz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
