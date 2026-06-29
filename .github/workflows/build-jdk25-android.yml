@@ -147,7 +147,8 @@ jobs:
             --with-zlib=bundled \
             \
             --enable-headless-only \
-            --with-alsa=no \
+            --with-alsa-include=/usr/include/alsa \
+            --with-alsa-lib=/usr/lib/x86_64-linux-gnu \
             \
             --with-jvm-variants=server \
             --with-jvm-features="\
