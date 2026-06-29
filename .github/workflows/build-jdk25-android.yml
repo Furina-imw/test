@@ -120,12 +120,36 @@ jobs:
       - name: Patch OpenJDK source for Android NDK compatibility
         working-directory: jdk-src
         run: |
-          # elfFile.hpp: Android NDK không có ELF64_ST_TYPE, chỉ có ELF_ST_TYPE(x) = ((x)&0xf)
-          # Thêm define ELF64_ST_TYPE nếu chưa có
-          sed -i 's|#define ELF_ST_TYPE ELF64_ST_TYPE|#ifndef ELF64_ST_TYPE\n#define ELF64_ST_TYPE(x) ((x)\&0xf)\n#endif\n#define ELF_ST_TYPE ELF64_ST_TYPE|' \
-            src/hotspot/share/utilities/elfFile.hpp
-          echo "Patch applied:"
-          grep -A3 "ELF64_ST_TYPE" src/hotspot/share/utilities/elfFile.hpp | head -10
+          # elfFile.hpp: NDK dùng ELF_ST_TYPE(x) là function-like macro
+          # OpenJDK define lại ELF_ST_TYPE = ELF64_ST_TYPE (object macro) → conflict
+          # Fix: thêm guard define ELF64_ST_TYPE trước khi elfFile.hpp redefine ELF_ST_TYPE
+          python3 - <<'PYEOF'
+import re
+
+path = "src/hotspot/share/utilities/elfFile.hpp"
+with open(path, "r") as f:
+    content = f.read()
+
+# Thêm guard ngay trước dòng #define ELF_ST_TYPE ELF64_ST_TYPE
+old = "#define ELF_ST_TYPE ELF64_ST_TYPE"
+new = """/* Android NDK compat: ELF64_ST_TYPE is defined as function-like macro */
+#ifndef ELF64_ST_TYPE
+#define ELF64_ST_TYPE(x) ((x) & 0xf)
+#endif
+#undef ELF_ST_TYPE
+#define ELF_ST_TYPE ELF64_ST_TYPE"""
+
+if old in content:
+    content = content.replace(old, new)
+    with open(path, "w") as f:
+        f.write(content)
+    print("Patch applied successfully")
+else:
+    print("WARNING: target string not found, searching context...")
+    for i, line in enumerate(content.splitlines()):
+        if "ELF_ST_TYPE" in line or "ELF64" in line:
+            print(f"  line {i+1}: {line}")
+PYEOF
 
       # ─── 6. Configure OpenJDK ───────────────────────────────────────────────
       - name: Configure OpenJDK (cross-compile for Android aarch64)
