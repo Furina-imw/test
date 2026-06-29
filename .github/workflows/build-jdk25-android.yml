@@ -1,256 +1,101 @@
-name: Build OpenJDK 25 for Android aarch64
+name: Build JRE 25 for Android arm64-v8a (Minecraft Optimized)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 180
-
-    env:
-      ANDROID_API: 35
-      NDK_VERSION: "27.2.12479018"
-      JDK_VERSION: "25"
-      OPENJDK_REF: "jdk-25.0.3-ga"
+    name: Build JRE 25 (arm64-v8a)
+    runs-on: ubuntu-latest
 
     steps:
-      # ─── 1. Checkout ────────────────────────────────────────────────────────
-      - name: Checkout OpenJDK source
-        uses: actions/checkout@v4
+      - name: Maximize disk space
+        uses: easimon/maximize-build-space@v10
         with:
-          repository: openjdk/jdk25u
-          ref: ${{ env.OPENJDK_REF }}
-          path: jdk-src
-          fetch-depth: 1
+          root-reserve-mb: 51200
+          swap-size-mb: 1024
 
-      # ─── 2. Host toolchain ──────────────────────────────────────────────────
-      - name: Install host build dependencies
+      - name: Install minimal build dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            autoconf make pkg-config zip unzip curl file \
-            gcc g++ libx11-dev libxext-dev libxrender-dev \
-            libxrandr-dev libxtst-dev libxt-dev \
-            libcups2-dev libfontconfig1-dev libasound2-dev \
-            libfreetype-dev libpng-dev zlib1g-dev \
-            clang lld ninja-build
-          
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/clang 100
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++ 100
-          sudo update-alternatives --set cc /usr/bin/clang
-          sudo update-alternatives --set c++ /usr/bin/clang++
+          sudo apt-get update
+          # Chỉ cài đặt những gói build thiết yếu, không cài thư viện Desktop
+          sudo apt-get install -y build-essential autoconf zip unzip ccache tar xz-utils
 
-      - name: Install Boot JDK 24 (bắt buộc để build JDK 25)
-        run: |
-          curl -fsSL "https://github.com/adoptium/temurin24-binaries/releases/download/jdk-24.0.2%2B12/OpenJDK24U-jdk_x64_linux_hotspot_24.0.2_12.tar.gz" -o /tmp/jdk24.tar.gz
-          sudo mkdir -p /opt/jdk24
-          sudo tar -xzf /tmp/jdk24.tar.gz -C /opt/jdk24 --strip-components=1
-          echo "BOOT_JDK=/opt/jdk24" >> $GITHUB_ENV
-          /opt/jdk24/bin/java -version
+      - name: Setup Boot JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '24'
+          distribution: 'temurin'
 
-      # ─── 3. Android NDK ─────────────────────────────────────────────────────
       - name: Setup Android NDK
-        uses: android-actions/setup-android@v3
-      
-      - name: Install NDK
         run: |
-          sdkmanager "ndk;${{ env.NDK_VERSION }}"
-          echo "NDK_ROOT=$ANDROID_SDK_ROOT/ndk/${{ env.NDK_VERSION }}" >> $GITHUB_ENV
+          wget -q https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+          unzip -q android-ndk-r27c-linux.zip
+          echo "ANDROID_NDK_HOME=$PWD/android-ndk-r27c" >> $GITHUB_ENV
+          echo "ANDROID_NDK=$PWD/android-ndk-r27c" >> $GITHUB_ENV
 
-      - name: Set NDK toolchain paths
+      - name: Clone OpenJDK 25 Source Code
         run: |
-          TOOLCHAIN=$ANDROID_SDK_ROOT/ndk/${{ env.NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64
-          echo "TOOLCHAIN=$TOOLCHAIN" >> $GITHUB_ENV
-          echo "CC=$TOOLCHAIN/bin/aarch64-linux-android${{ env.ANDROID_API }}-clang" >> $GITHUB_ENV
-          echo "CXX=$TOOLCHAIN/bin/aarch64-linux-android${{ env.ANDROID_API }}-clang++" >> $GITHUB_ENV
-          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
-          echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
-          echo "SYSROOT=$TOOLCHAIN/sysroot" >> $GITHUB_ENV
+          git clone --depth 1 https://github.com/openjdk/jdk.git jdk25
 
-      # ─── 4. Cross-compile dependencies ─────────────────────────────────────
-      - name: Build freetype for Android aarch64
+      - name: Configure OpenJDK (Headless, Bundled, Max Performance)
         run: |
-          FREETYPE_VER="2.13.3"
-          curl -fsSL "https://downloads.sourceforge.net/freetype/freetype-${FREETYPE_VER}.tar.xz" | tar -xJ
-          cd freetype-${FREETYPE_VER}
-          ./configure \
-            --host=aarch64-linux-android \
-            --prefix=$HOME/android-sysroot \
-            CC=$CC CXX=$CXX AR=$AR \
-            --enable-static --enable-shared \
-            --without-bzip2 --without-png --without-harfbuzz --without-brotli
-          make -j$(nproc)
-          make install
-
-      - name: Build libpng for Android aarch64
-        run: |
-          PNG_VER="1.6.48"
-          curl -fsSL "https://downloads.sourceforge.net/libpng/libpng-${PNG_VER}.tar.xz" | tar -xJ
-          cd libpng-${PNG_VER}
-          ./configure \
-            --host=aarch64-linux-android \
-            --prefix=$HOME/android-sysroot \
-            CC=$CC CXX=$CXX AR=$AR \
-            --enable-static --disable-shared
-          make -j$(nproc)
-          make install
-
-      - name: Build zlib for Android aarch64
-        run: |
-          ZLIB_VER="1.3.2"
-          curl -fsSL "https://github.com/madler/zlib/releases/download/v${ZLIB_VER}/zlib-${ZLIB_VER}.tar.gz" | tar -xz
-          cd zlib-${ZLIB_VER}
-          CC=$CC AR=$AR \
-          ./configure \
-            --prefix=$HOME/android-sysroot \
-            --static
-          make -j$(nproc)
-          make install
-
-      # ─── 5. Patch OpenJDK source cho Android ────────────────────────────────
-      - name: Patch OpenJDK source for Android NDK compatibility
-        working-directory: jdk-src
-        run: |
-          ELF_HPP="src/hotspot/share/utilities/elfFile.hpp"
-          if grep -q "define ELF_ST_TYPE ELF64_ST_TYPE" "$ELF_HPP"; then
-            sed -i 's/#define ELF_ST_TYPE ELF64_ST_TYPE/#ifndef ELF_ST_TYPE\n#define ELF_ST_TYPE ELF64_ST_TYPE\n#endif/' "$ELF_HPP"
-            echo "Patch applied OK"
-          else
-            echo "Patch target not found or already patched"
-          fi
-
-      # ─── 6. Configure OpenJDK ───────────────────────────────────────────────
-      - name: Configure OpenJDK (cross-compile for Android aarch64)
-        working-directory: jdk-src
-        run: |
-          set -o pipefail
-          ANDROID_SYSROOT=$HOME/android-sysroot
-
-          mkdir -p $HOME/ndk-tools
-          ln -sf $TOOLCHAIN/bin/llvm-ar    $HOME/ndk-tools/ar
-          ln -sf $TOOLCHAIN/bin/llvm-strip $HOME/ndk-tools/strip
-          ln -sf $TOOLCHAIN/bin/llvm-nm    $HOME/ndk-tools/nm
-          export PATH="$HOME/ndk-tools:$PATH"
-
-          mkdir -p ${ANDROID_SYSROOT}/include/X11/extensions
-          for src in /usr/include/X11/*.h; do
-            ln -sf "$src" "${ANDROID_SYSROOT}/include/X11/$(basename $src)" 2>/dev/null || true
-          done
-          for src in /usr/include/X11/extensions/*.h; do
-            ln -sf "$src" "${ANDROID_SYSROOT}/include/X11/extensions/$(basename $src)" 2>/dev/null || true
-          done
-
+          cd jdk25
           bash configure \
             --openjdk-target=aarch64-linux-android \
-            --with-toolchain-type=clang \
-            --with-sysroot=$SYSROOT \
-            --with-extra-cflags="-I${ANDROID_SYSROOT}/include -fPIC -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }} -D_GNU_SOURCE" \
-            --with-extra-cxxflags="-I${ANDROID_SYSROOT}/include -fPIC -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }} -D_GNU_SOURCE" \
-            --with-extra-ldflags="-L${ANDROID_SYSROOT}/lib -L${SYSROOT}/usr/lib/aarch64-linux-android/${{ env.ANDROID_API }} -pie" \
-            \
-            --with-freetype=system \
-            --with-freetype-lib=${ANDROID_SYSROOT}/lib \
-            --with-freetype-include=${ANDROID_SYSROOT}/include/freetype2 \
-            \
+            --with-sysroot=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot \
+            --with-toolchain-path=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin \
+            --disable-warnings-as-errors \
+            --enable-unlimited-crypto \
+            --enable-headless-only \
+            --with-freetype=bundled \
             --with-libpng=bundled \
             --with-zlib=bundled \
-            \
-            --enable-headless-only \
-            --with-alsa-include=/usr/include/alsa \
-            --with-alsa-lib=/usr/lib/x86_64-linux-gnu \
-            --with-cups=disabled \
-            --with-fontconfig=disabled \
-            \
-            --with-jvm-variants=server \
-            --with-jvm-features="compiler1,compiler2,zgc,shenandoahgc,g1gc,parallelgc,serialgc,epsilongc,jvmti,jfr,management,services,vm-structs,jni-check,link-time-opt" \
-            \
-            --disable-warnings-as-errors \
-            --disable-precompiled-headers \
-            --with-debug-level=release \
-            --with-native-debug-symbols=none \
-            \
-            --with-boot-jdk=$BOOT_JDK \
-            \
-            --x-includes=${ANDROID_SYSROOT}/include \
-            --x-libraries=/usr/lib/x86_64-linux-gnu \
-            \
-            BUILD_CC=/usr/bin/clang \
-            BUILD_CXX=/usr/bin/clang++ \
-            CC=$CC \
-            CXX=$CXX \
-            2>&1 | tee configure.log
+            --with-harfbuzz=bundled \
+            --with-lcms=bundled \
+            --with-native-debug-symbols=internal \
+            --with-jvm-variants=server
 
-      - name: Upload configure log (nếu thất bại)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: configure-log
-          path: |
-            jdk-src/configure.log
-            jdk-src/config.log
-
-      # ─── 7. Build ───────────────────────────────────────────────────────────
-      - name: Build JRE
-        working-directory: jdk-src
+      - name: Build OpenJDK Images
         run: |
-          set -o pipefail
-          make images JOBS=$(nproc) 2>&1 | tee build.log
+          cd jdk25
+          make images JOBS=$(nproc)
 
-      # ─── 8. Bộ dò lỗi thời gian thực (Tự động in log ra console khi lỗi) ───
-      - name: Inspect Compilation Failures
-        if: failure()
+      - name: Create Optimized JRE using jlink
         run: |
-          echo "======================================================="
-          echo "❌ TIẾN TRÌNH BIÊN DỊCH BỊ SẬP! ĐANG KIỂM TRA LOG THỰC TẾ..."
-          echo "======================================================="
-          if [ -f jdk-src/configure.log ]; then
-            echo "--- 40 dòng cuối của configure.log ---"
-            tail -n 40 jdk-src/configure.log
-          fi
-          if [ -f jdk-src/build.log ]; then
-            echo "--- 80 dòng cuối của build.log ---"
-            tail -n 80 jdk-src/build.log
-          fi
-          echo "======================================================="
-
-      - name: Upload build log (nếu thất bại)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: jdk-src/build.log
-
-      # ─── 9. Package ─────────────────────────────────────────────────────────
-      - name: Locate build output
-        working-directory: jdk-src
-        run: |
-          BUILD_DIR=$(ls build/ | head -1)
-          if [ -z "$BUILD_DIR" ]; then
-            echo "::error::Thư mục build trống rỗng!"
-            exit 1
-          fi
-          echo "BUILD_DIR=$GITHUB_WORKSPACE/jdk-src/build/${BUILD_DIR}" >> $GITHUB_ENV
-
-      - name: Strip binaries
-        run: |
-          find $BUILD_DIR/images/jdk -name "*.so" | xargs $STRIP --strip-unneeded || true
-          find $BUILD_DIR/images/jdk/bin -type f | xargs $STRIP --strip-all || true
-
-      - name: Verify ZGC present
-        run: |
-          strings $BUILD_DIR/images/jdk/lib/server/libjvm.so | grep -i "zgc" | head -10 || true
-
-      - name: Package Unified JRE Archive
-        run: |
-          cd $BUILD_DIR/images/jdk
-          tar -cJf $GITHUB_WORKSPACE/jre25-android-aarch64.tar.xz *
-
-      # ─── 10. Upload artifacts ────────────────────────────────────────────────
-      - name: Upload JDK artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: openjdk25-android-aarch64-jre
-          path: ${{ github.workspace }}/jre25-android-aarch64.tar.xz
-          retention-days: 30
+          cd jdk25
+          JDK_IMAGE=build/linux-aarch64-server-release/images/jdk
           
+          # Đóng gói toàn bộ module khả dụng (đầy đủ tính năng nhất cho Minecraft)
+          $JDK_IMAGE/bin/jlink \
+            --module-path $JDK_IMAGE/jmods \
+            --add-modules ALL-MODULE-PATH \
+            --no-man-pages \
+            --no-header-files \
+            --compress=zip-6 \
+            --output ../jre-25-android-arm64
+
+      - name: Cleanup incompatible native libraries
+        run: |
+          cd jre-25-android-arm64
+          # Xóa các thư viện native không tương thích hoặc không dùng được trên Android
+          # libjsound.so: Android dùng OpenSL ES / AAudio, không dùng ALSA
+          # libawt_xawt.so: Giao diện X11 không tồn tại trên Android
+          find . -name "libjsound.so" -delete
+          find . -name "libawt_xawt.so" -delete
+          find . -name "libsplashscreen.so" -delete
+
+      - name: Package as tar.xz
+        run: |
+          tar -cJf jre-25-android-arm64-v8a.tar.xz jre-25-android-arm64
+          ls -lh jre-25-android-arm64-v8a.tar.xz
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jre-25-android-arm64-v8a
+          path: jre-25-android-arm64-v8a.tar.xz
+          retention-days: 14
