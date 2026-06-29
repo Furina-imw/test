@@ -149,6 +149,8 @@ jobs:
             --enable-headless-only \
             --with-alsa-include=/usr/include/alsa \
             --with-alsa-lib=/usr/lib/x86_64-linux-gnu \
+            --with-cups=/usr \
+            --with-fontconfig-include=/usr/include \
             \
             --with-jvm-variants=server \
             --with-jvm-features="\
