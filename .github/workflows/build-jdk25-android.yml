@@ -1,0 +1,236 @@
+name: Build OpenJDK 25 for Android aarch64
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      ANDROID_API: 35
+      NDK_VERSION: "27.2.12479018"
+      JDK_VERSION: "25"
+      OPENJDK_TAG: "jdk-25+37"   # thay bằng tag mới nhất từ github.com/openjdk/jdk
+
+    steps:
+      # ─── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout OpenJDK source
+        uses: actions/checkout@v4
+        with:
+          repository: openjdk/jdk
+          ref: ${{ env.OPENJDK_TAG }}
+          path: jdk-src
+          fetch-depth: 1
+
+      # ─── 2. Host toolchain ──────────────────────────────────────────────────
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            autoconf make pkg-config zip unzip curl file \
+            gcc g++ libx11-dev libxext-dev libxrender-dev \
+            libxrandr-dev libxtst-dev libxt-dev \
+            libcups2-dev libfontconfig1-dev libasound2-dev \
+            libfreetype-dev libpng-dev zlib1g-dev \
+            openjdk-21-jdk ninja-build
+
+      # ─── 3. Android NDK ─────────────────────────────────────────────────────
+      - name: Setup Android NDK
+        uses: android-actions/setup-android@v3
+      
+      - name: Install NDK
+        run: |
+          sdkmanager "ndk;${{ env.NDK_VERSION }}"
+          echo "NDK_ROOT=$ANDROID_SDK_ROOT/ndk/${{ env.NDK_VERSION }}" >> $GITHUB_ENV
+
+      - name: Set NDK toolchain paths
+        run: |
+          TOOLCHAIN=$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
+          echo "TOOLCHAIN=$TOOLCHAIN" >> $GITHUB_ENV
+          echo "CC=$TOOLCHAIN/bin/aarch64-linux-android${{ env.ANDROID_API }}-clang" >> $GITHUB_ENV
+          echo "CXX=$TOOLCHAIN/bin/aarch64-linux-android${{ env.ANDROID_API }}-clang++" >> $GITHUB_ENV
+          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
+          echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
+          echo "SYSROOT=$TOOLCHAIN/sysroot" >> $GITHUB_ENV
+
+      # ─── 4. Cross-compile dependencies ─────────────────────────────────────
+      - name: Build freetype for Android aarch64
+        run: |
+          FREETYPE_VER="2.13.3"
+          curl -fsSL "https://downloads.sourceforge.net/freetype/freetype-${FREETYPE_VER}.tar.xz" | tar -xJ
+          cd freetype-${FREETYPE_VER}
+          ./configure \
+            --host=aarch64-linux-android \
+            --prefix=$HOME/android-sysroot \
+            CC=$CC CXX=$CXX AR=$AR \
+            --enable-static --disable-shared \
+            --without-bzip2 --without-png --without-harfbuzz
+          make -j$(nproc)
+          make install
+
+      - name: Build libpng for Android aarch64
+        run: |
+          PNG_VER="1.6.48"
+          curl -fsSL "https://downloads.sourceforge.net/libpng/libpng-${PNG_VER}.tar.xz" | tar -xJ
+          cd libpng-${PNG_VER}
+          ./configure \
+            --host=aarch64-linux-android \
+            --prefix=$HOME/android-sysroot \
+            CC=$CC CXX=$CXX AR=$AR \
+            --enable-static --disable-shared
+          make -j$(nproc)
+          make install
+
+      - name: Build zlib for Android aarch64
+        run: |
+          ZLIB_VER="1.3.1"
+          curl -fsSL "https://zlib.net/zlib-${ZLIB_VER}.tar.gz" | tar -xz
+          cd zlib-${ZLIB_VER}
+          CC=$CC AR=$AR \
+          ./configure \
+            --prefix=$HOME/android-sysroot \
+            --static
+          make -j$(nproc)
+          make install
+
+      # ─── 5. Configure OpenJDK ───────────────────────────────────────────────
+      - name: Configure OpenJDK (cross-compile for Android aarch64)
+        working-directory: jdk-src
+        run: |
+          TOOLCHAIN=$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
+          ANDROID_SYSROOT=$HOME/android-sysroot
+
+          bash configure \
+            --openjdk-target=aarch64-linux-android \
+            --with-toolchain-type=clang \
+            --with-sysroot=$SYSROOT \
+            --with-extra-cflags="-I${ANDROID_SYSROOT}/include -fPIC -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }}" \
+            --with-extra-cxxflags="-I${ANDROID_SYSROOT}/include -fPIC -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }}" \
+            --with-extra-ldflags="-L${ANDROID_SYSROOT}/lib -L${SYSROOT}/usr/lib/aarch64-linux-android/${{ env.ANDROID_API }}" \
+            \
+            --with-freetype=bundled \
+            --with-freetype-lib=${ANDROID_SYSROOT}/lib \
+            --with-freetype-include=${ANDROID_SYSROOT}/include/freetype2 \
+            \
+            --with-libpng=bundled \
+            --with-zlib=bundled \
+            \
+            --with-jvm-variants=server \
+            --with-jvm-features="\
+              compiler1,\
+              compiler2,\
+              zgc,\
+              shenandoahgc,\
+              g1gc,\
+              parallelgc,\
+              serialgc,\
+              epsilongc,\
+              jvmti,\
+              jfr,\
+              management,\
+              services,\
+              vm-structs,\
+              jni-check,\
+              link-time-opt" \
+            \
+            --disable-warnings-as-errors \
+            --disable-precompiled-headers \
+            --with-debug-level=release \
+            --with-native-debug-symbols=none \
+            \
+            --with-boot-jdk=/usr/lib/jvm/java-21-openjdk-amd64 \
+            \
+            --x-includes=/usr/include \
+            --x-libraries=/usr/lib \
+            \
+            CC=$TOOLCHAIN/bin/aarch64-linux-android${{ env.ANDROID_API }}-clang \
+            CXX=$TOOLCHAIN/bin/aarch64-linux-android${{ env.ANDROID_API }}-clang++ \
+            2>&1 | tee configure.log
+
+      - name: Upload configure log (nếu thất bại)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: configure-log
+          path: |
+            jdk-src/configure.log
+            jdk-src/config.log
+
+      # ─── 6. Build ───────────────────────────────────────────────────────────
+      - name: Build images
+        working-directory: jdk-src
+        run: |
+          make images JOBS=$(nproc) 2>&1 | tee build.log
+
+      - name: Upload build log (nếu thất bại)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: jdk-src/build.log
+
+      # ─── 7. Package ─────────────────────────────────────────────────────────
+      - name: Locate build output
+        working-directory: jdk-src
+        run: |
+          BUILD_DIR=$(ls build/ | head -1)
+          echo "BUILD_DIR=jdk-src/build/${BUILD_DIR}" >> $GITHUB_ENV
+          echo "Found build dir: $BUILD_DIR"
+
+      - name: Strip binaries
+        run: |
+          find $BUILD_DIR/images/jdk -name "*.so" | xargs $STRIP --strip-unneeded || true
+          find $BUILD_DIR/images/jdk/bin -type f | xargs $STRIP --strip-all || true
+
+      - name: Verify ZGC present
+        run: |
+          echo "=== Checking for ZGC ==="
+          find $BUILD_DIR/images/jdk -name "*.so" | xargs grep -l "ZGC" 2>/dev/null || echo "ZGC may be compiled into libjvm.so statically"
+          strings $BUILD_DIR/images/jdk/lib/server/libjvm.so | grep -i "zgc" | head -10 || true
+
+      - name: Package universal (conf + lib jars)
+        run: |
+          cd $BUILD_DIR/images/jdk
+          tar -cJf $GITHUB_WORKSPACE/universal.tar.xz \
+            conf/ \
+            legal/ \
+            lib/modules \
+            lib/jrt-fs.jar \
+            lib/tzdb.dat \
+            lib/security/ \
+            lib/fonts/ \
+            lib/jfr/ \
+            lib/classlist \
+            lib/jvm.cfg \
+            lib/jspawnhelper \
+            lib/*.properties \
+            lib/*.bfc \
+            lib/*.src \
+            release
+
+      - name: Package bin-arm64 (binaries + native libs)
+        run: |
+          cd $BUILD_DIR/images/jdk
+          tar -cJf $GITHUB_WORKSPACE/bin-arm64.tar.xz \
+            bin/ \
+            lib/server/ \
+            lib/*.so \
+            lib/jexec \
+            release
+
+      - name: Generate version file
+        run: |
+          sha1sum $GITHUB_WORKSPACE/universal.tar.xz | awk '{print $1}' > $GITHUB_WORKSPACE/version
+
+      # ─── 8. Upload artifacts ────────────────────────────────────────────────
+      - name: Upload JDK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openjdk25-android-aarch64-full
+          path: |
+            ${{ github.workspace }}/universal.tar.xz
+            ${{ github.workspace }}/bin-arm64.tar.xz
+            ${{ github.workspace }}/version
+          retention-days: 30
