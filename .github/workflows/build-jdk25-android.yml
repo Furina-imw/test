@@ -49,7 +49,8 @@ jobs:
         run: |
           # JDK 25 yêu cầu boot JDK N-1 = JDK 24
           # Ubuntu apt chỉ có JDK 21, phải tải JDK 24 từ Adoptium
-          curl -fsSL "https://api.adoptium.net/v3/binary/latest/24/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" \
+          # Dùng GitHub releases trực tiếp thay vì Adoptium API (tránh lỗi 415)
+          curl -fsSL "https://github.com/adoptium/temurin24-binaries/releases/download/jdk-24.0.2%2B12/OpenJDK24U-jdk_x64_linux_hotspot_24.0.2_12.tar.gz" \
             -o /tmp/jdk24.tar.gz
           sudo mkdir -p /opt/jdk24
           sudo tar -xzf /tmp/jdk24.tar.gz -C /opt/jdk24 --strip-components=1
