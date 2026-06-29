@@ -1,4 +1,4 @@
-name: Build JRE 25 for Android arm64-v8a (Fixed Cross-Compile)
+name: Build JRE 25 for Android arm64-v8a (Fixed Disk Space)
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
       - name: Maximize disk space
         uses: easimon/maximize-build-space@v10
         with:
-          root-reserve-mb: 51200
+          root-reserve-mb: 20480 # Đã giảm từ 51200 xuống 20480 để tránh hết chỗ cài Boot JDK
           swap-size-mb: 1024
 
       - name: Install minimal build dependencies
@@ -50,7 +50,7 @@ jobs:
             ln -sf $NDK_BIN/llvm-$tool $GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-$tool
           done
           
-          # Also create non-prefixed symlinks (optional but helpful)
+          # Also create non-prefixed symlinks
           ln -sf $NDK_BIN/aarch64-linux-android24-clang $GITHUB_WORKSPACE/toolchain/bin/gcc
           ln -sf $NDK_BIN/aarch64-linux-android24-clang++ $GITHUB_WORKSPACE/toolchain/bin/g++
           ln -sf $NDK_BIN/llvm-ar $GITHUB_WORKSPACE/toolchain/bin/ar
