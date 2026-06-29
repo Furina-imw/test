@@ -120,36 +120,18 @@ jobs:
       - name: Patch OpenJDK source for Android NDK compatibility
         working-directory: jdk-src
         run: |
-          # elfFile.hpp: NDK dùng ELF_ST_TYPE(x) là function-like macro
-          # OpenJDK define lại ELF_ST_TYPE = ELF64_ST_TYPE (object macro) → conflict
-          # Fix: thêm guard define ELF64_ST_TYPE trước khi elfFile.hpp redefine ELF_ST_TYPE
-          python3 - <<'PYEOF'
-import re
-
-path = "src/hotspot/share/utilities/elfFile.hpp"
-with open(path, "r") as f:
-    content = f.read()
-
-# Thêm guard ngay trước dòng #define ELF_ST_TYPE ELF64_ST_TYPE
-old = "#define ELF_ST_TYPE ELF64_ST_TYPE"
-new = """/* Android NDK compat: ELF64_ST_TYPE is defined as function-like macro */
-#ifndef ELF64_ST_TYPE
-#define ELF64_ST_TYPE(x) ((x) & 0xf)
-#endif
-#undef ELF_ST_TYPE
-#define ELF_ST_TYPE ELF64_ST_TYPE"""
-
-if old in content:
-    content = content.replace(old, new)
-    with open(path, "w") as f:
-        f.write(content)
-    print("Patch applied successfully")
-else:
-    print("WARNING: target string not found, searching context...")
-    for i, line in enumerate(content.splitlines()):
-        if "ELF_ST_TYPE" in line or "ELF64" in line:
-            print(f"  line {i+1}: {line}")
-PYEOF
+          ELF_HPP="src/hotspot/share/utilities/elfFile.hpp"
+          # NDK dùng ELF_ST_TYPE(x) là function-like macro, OpenJDK muốn dùng như object macro
+          # Thêm #undef ELF_ST_TYPE và guard ELF64_ST_TYPE trước dòng redefine
+          if grep -q "define ELF_ST_TYPE ELF64_ST_TYPE" "$ELF_HPP"; then
+            sed -i 's/#define ELF_ST_TYPE ELF64_ST_TYPE/\/* Android NDK compat *\/\n#ifndef ELF64_ST_TYPE\n#define ELF64_ST_TYPE(x) ((x) \& 0xf)\n#endif\n#undef ELF_ST_TYPE\n#define ELF_ST_TYPE ELF64_ST_TYPE/' "$ELF_HPP"
+            echo "Patch applied OK"
+            grep -n "ELF_ST_TYPE\|ELF64" "$ELF_HPP" | head -15
+          else
+            echo "WARNING: target not found in $ELF_HPP"
+            grep -n "ELF_ST_TYPE\|ELF64" "$ELF_HPP" | head -15
+            exit 1
+          fi
 
       # ─── 6. Configure OpenJDK ───────────────────────────────────────────────
       - name: Configure OpenJDK (cross-compile for Android aarch64)
