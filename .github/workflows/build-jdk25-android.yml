@@ -68,7 +68,7 @@ jobs:
             --prefix=$HOME/android-sysroot \
             CC=$CC CXX=$CXX AR=$AR \
             --enable-static --disable-shared \
-            --without-bzip2 --without-png --without-harfbuzz
+            --without-bzip2 --without-png --without-harfbuzz --without-brotli
           make -j$(nproc)
           make install
 
