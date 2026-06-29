@@ -36,28 +36,38 @@ jobs:
           echo "ANDROID_NDK_HOME=$PWD/android-ndk-r27c" >> $GITHUB_ENV
           echo "ANDROID_NDK=$PWD/android-ndk-r27c" >> $GITHUB_ENV
 
+      - name: Create NDK Toolchain Symlinks (Fake GCC)
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/toolchain/bin
+          NDK_BIN=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
+          
+          # Tạo symlink giả lập GCC để qua mặt configure script của OpenJDK
+          ln -sf $NDK_BIN/aarch64-linux-android24-clang $GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-gcc
+          ln -sf $NDK_BIN/aarch64-linux-android24-clang++ $GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-g++
+          
+          # Tạo symlink cho các công cụ LLVM khác với tiền tố chuẩn
+          for tool in ar nm strip objcopy objdump readelf c++filt dwp ranlib as ld profdata; do
+            ln -sf $NDK_BIN/llvm-$tool $GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-$tool
+          done
+          
+          # Also create non-prefixed symlinks (optional but helpful)
+          ln -sf $NDK_BIN/aarch64-linux-android24-clang $GITHUB_WORKSPACE/toolchain/bin/gcc
+          ln -sf $NDK_BIN/aarch64-linux-android24-clang++ $GITHUB_WORKSPACE/toolchain/bin/g++
+          ln -sf $NDK_BIN/llvm-ar $GITHUB_WORKSPACE/toolchain/bin/ar
+          ln -sf $NDK_BIN/llvm-nm $GITHUB_WORKSPACE/toolchain/bin/nm
+          ln -sf $NDK_BIN/llvm-strip $GITHUB_WORKSPACE/toolchain/bin/strip
+
       - name: Clone OpenJDK 25 Source Code
         run: |
           git clone --depth 1 -b jdk25 https://github.com/openjdk/jdk.git jdk25
 
-      - name: Configure OpenJDK (Explicit NDK Compilers)
+      - name: Configure OpenJDK (Using Fake GCC Toolchain)
         run: |
           cd jdk25
-          # Xác định đường dẫn toolchain của NDK
-          TOOLCHAIN=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64
-          
-          # ÉP BUỘC OpenJDK dùng Clang của NDK thay vì GCC của máy host
-          export CC=$TOOLCHAIN/bin/aarch64-linux-android24-clang
-          export CXX=$TOOLCHAIN/bin/aarch64-linux-android24-clang++
-          export AR=$TOOLCHAIN/bin/llvm-ar
-          export NM=$TOOLCHAIN/bin/llvm-nm
-          export STRIP=$TOOLCHAIN/bin/llvm-strip
-          export OBJCOPY=$TOOLCHAIN/bin/llvm-objcopy
-          export OBJDUMP=$TOOLCHAIN/bin/llvm-objdump
-
           bash configure \
             --openjdk-target=aarch64-linux-android \
-            --with-sysroot=$TOOLCHAIN/sysroot \
+            --with-sysroot=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot \
+            --with-toolchain-path=$GITHUB_WORKSPACE/toolchain/bin \
             --with-boot-jdk=$JAVA_HOME \
             --disable-warnings-as-errors \
             --enable-unlimited-crypto \
